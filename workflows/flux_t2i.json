@@ -1,0 +1,63 @@
+{
+  "name": "flux_t2i",
+  "version": 2,
+  "title": "FLUX.1-dev GGUF 文生图（Q4_K_S · 8GB 显存可跑）",
+  "description": "本机实测可用的唯一路线：UnetLoaderGGUF + DualCLIPLoader(clip_l+t5xxl_fp16) + flux-ae。原生约 1MP，默认 1024x1024；768 以下细节明显变差。cfg=1 是 FLUX dev 的固定用法，此时负向提示词不生效（保留空分支只为兼容调高 cfg 的实验）。",
+  "model": "flux1-dev-Q4_K_S.gguf",
+  "native_mp": 1.0,
+  "recommended_sizes": [
+    { "name": "square", "width": 1024, "height": 1024, "note": "原生 1MP，首选" },
+    { "name": "landscape_16_9", "width": 1344, "height": 768, "note": "约 1.03MP" },
+    { "name": "portrait_9_16", "width": 768, "height": 1344, "note": "约 1.03MP" },
+    { "name": "landscape_4_3", "width": 1152, "height": 896, "note": "约 1.03MP" }
+  ],
+  "bindings": {
+    "prompt": ["4", "text"],
+    "negative": ["6", "text"],
+    "width": ["7", "width"],
+    "height": ["7", "height"],
+    "steps": ["8", "steps"],
+    "seed": ["8", "seed"],
+    "guidance": ["5", "guidance"],
+    "filename_prefix": ["10", "filename_prefix"]
+  },
+  "randomize": ["seed"],
+  "defaults": {
+    "prompt": "a brass clockwork robot watering a bonsai tree, soft rim light, shallow depth of field, high detail",
+    "negative": "",
+    "width": 1024,
+    "height": 1024,
+    "steps": 20,
+    "guidance": 3.5,
+    "filename_prefix": "comfyforge/flux"
+  },
+  "workflow": {
+    "1": { "class_type": "UnetLoaderGGUF", "inputs": { "unet_name": "flux1-dev-Q4_K_S.gguf" } },
+    "2": {
+      "class_type": "DualCLIPLoader",
+      "inputs": { "clip_name1": "clip_l.safetensors", "clip_name2": "t5xxl_fp16.safetensors", "type": "flux" }
+    },
+    "3": { "class_type": "VAELoader", "inputs": { "vae_name": "flux-ae.safetensors" } },
+    "4": { "class_type": "CLIPTextEncode", "inputs": { "clip": ["2", 0], "text": "" } },
+    "5": { "class_type": "FluxGuidance", "inputs": { "conditioning": ["4", 0], "guidance": 3.5 } },
+    "6": { "class_type": "CLIPTextEncode", "inputs": { "clip": ["2", 0], "text": "" } },
+    "7": { "class_type": "EmptySD3LatentImage", "inputs": { "width": 1024, "height": 1024, "batch_size": 1 } },
+    "8": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": ["1", 0],
+        "positive": ["5", 0],
+        "negative": ["6", 0],
+        "latent_image": ["7", 0],
+        "seed": 42,
+        "steps": 20,
+        "cfg": 1.0,
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "denoise": 1.0
+      }
+    },
+    "9": { "class_type": "VAEDecode", "inputs": { "samples": ["8", 0], "vae": ["3", 0] } },
+    "10": { "class_type": "SaveImage", "inputs": { "images": ["9", 0], "filename_prefix": "comfyforge/flux" } }
+  }
+}

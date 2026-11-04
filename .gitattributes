@@ -1,0 +1,29 @@
+# 统一换行，避免 Windows 提交把整个仓库变成 CRLF
+* text=auto eol=lf
+
+# Windows 批处理必须是 CRLF，否则 cmd 解析出错
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# 文档/源码按文本处理
+*.md  text eol=lf
+*.mjs text eol=lf
+*.js  text eol=lf
+*.json text eol=lf
+*.py  text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# 二进制，禁止做任何换行/合并处理
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.webp binary
+*.mp4  binary
+*.webm binary
+*.mp3  binary
+*.wav  binary
+*.safetensors binary
+*.gguf binary
+*.onnx binary
+*.pt   binary

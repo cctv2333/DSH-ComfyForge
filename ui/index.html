@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ComfyForge · 工作看板</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#161a21; --panel-2:#1b2029; --line:#252b36;
+    --txt:#e7eaf0; --dim:#98a2b3; --dim-2:#6b7686;
+    --ok:#57c98a; --warn:#d9a441; --bad:#d9695f; --accent:#7dd3fc;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.55 "Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+  a{color:var(--accent);text-decoration:none}
+  header{position:sticky;top:0;z-index:5;background:rgba(15,17,21,.94);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+  .bar{display:flex;align-items:center;gap:18px;padding:13px 24px;flex-wrap:wrap}
+  h1{font-size:16px;margin:0;font-weight:600;letter-spacing:.2px}
+  h1 span{color:var(--accent)}
+  .stats{display:flex;gap:16px;color:var(--dim-2);font-size:12.5px}
+  .stats b{color:var(--txt);font-weight:600;font-variant-numeric:tabular-nums;margin-left:3px}
+  .spacer{flex:1}
+  select,button{background:var(--panel-2);color:var(--txt);border:1px solid var(--line);border-radius:7px;padding:5px 11px;font-size:12.5px;cursor:pointer}
+  select:hover,button:hover{border-color:#313a49}
+  main{padding:20px 24px 56px;max-width:1440px;margin:0 auto}
+
+  .picks{margin-bottom:22px;border:1px solid var(--line);background:var(--panel);border-radius:12px;padding:12px 14px}
+  .picks h2{margin:0 0 10px;font-size:12.5px;color:var(--dim);font-weight:600}
+  .picks h2 b{color:#d9b45c}
+  .pickrow{display:flex;gap:10px;overflow-x:auto;padding-bottom:2px}
+  .pick{flex:0 0 auto;width:168px;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--panel-2);cursor:pointer}
+  .pick:hover{border-color:#3a4556}
+  .pick img{width:100%;height:104px;object-fit:cover;display:block}
+  .pick span{display:block;padding:6px 8px;font-size:11.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+  .run{border:1px solid var(--line);border-radius:12px;background:var(--panel);margin-bottom:16px;overflow:hidden}
+  .runhead{display:flex;gap:16px;align-items:flex-start;padding:13px 16px;border-bottom:1px solid var(--line)}
+  .when{color:var(--dim-2);font-size:11.5px;white-space:nowrap;font-variant-numeric:tabular-nums;padding-top:2px}
+  .prompt{flex:1;min-width:0}
+  .prompt .text{font-size:13.5px;line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .chips{display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:var(--dim-2)}
+  .chips code{background:#0b0d11;border:1px solid var(--line);border-radius:4px;padding:0 5px;color:#b9c4d2;font-size:11.5px}
+  .thumbs{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:1px;background:var(--line)}
+  .thumb{position:relative;background:#0b0d11;cursor:zoom-in;margin:0}
+  .thumb img{width:100%;aspect-ratio:4/3;object-fit:contain;display:block;background:#0b0d11}
+  .badge{position:absolute;left:9px;top:9px;font-size:10.5px;letter-spacing:.04em;padding:2px 7px;border-radius:5px;background:rgba(10,12,16,.82);border:1px solid rgba(255,255,255,.08)}
+  .badge.ok{color:var(--ok)} .badge.warn{color:var(--warn)} .badge.risky{color:var(--bad)} .badge.na{color:var(--dim-2)}
+  .pickbtn{position:absolute;right:9px;top:9px;width:28px;height:28px;padding:0;border-radius:7px;background:rgba(10,12,16,.75);border:1px solid rgba(255,255,255,.12);font-size:14px;line-height:26px;text-align:center;color:#cfd6e0}
+  .pickbtn:hover{border-color:#4a5566}
+  .pickbtn.on{color:#e7c46a;border-color:#7a6226;background:rgba(60,48,16,.8)}
+  .foot{position:absolute;left:0;right:0;bottom:0;padding:5px 9px;font-size:11px;color:#c6ced9;background:linear-gradient(180deg,transparent,rgba(0,0,0,.8));font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .empty{color:var(--dim-2);padding:56px;text-align:center;font-size:13px}
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <h1>ComfyForge <span>看板</span></h1>
+    <div class="stats" id="stats"></div>
+    <div class="spacer"></div>
+    <a href="/flow" style="font-size:12.5px;margin-right:6px">工作流图 →</a>
+    <select id="filter">
+      <option value="all">全部</option>
+      <option value="flagged">只看有问题的</option>
+      <option value="picked">只看精选</option>
+    </select>
+    <button id="refresh">刷新</button>
+  </div>
+</header>
+<main>
+  <section class="picks" id="picksBox" style="display:none">
+    <h2>★ 精选 <b id="pickCount"></b></h2>
+    <div class="pickrow" id="pickrow"></div>
+  </section>
+  <div id="runs"></div>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+let STATE = null;
+let FILTER = 'all';
+
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmtTime = (iso) => { const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleString('zh-CN', {hour12:false}); };
+const lvl = (o) => (o && o.quality ? (o.quality.verdict?.level || 'ok') : 'na');
+
+function imgCard(o){
+  const size = o.width && o.height ? `${o.width}×${o.height}` : '';
+  const lap = o.quality && o.quality.lap_var_512;
+  const flags = (o.quality && o.quality.verdict && o.quality.verdict.flags) || [];
+  const badge = o.quality ? lvl(o).toUpperCase() : '未体检';
+  return `<figure class="thumb" data-key="${esc(o.key)}" data-fn="${esc(o.filename)}" data-sub="${esc(o.subfolder)}" data-pid="${esc(o.prompt_id || '')}">
+    ${o.url ? `<img loading="lazy" src="${o.url}" alt="${esc(o.filename)}" onclick="window.open('${o.url}','_blank')">` : `<div style="aspect-ratio:4/3;display:grid;place-items:center;color:#6b7686;font-size:12px">文件缺失</div>`}
+    <span class="badge ${lvl(o)}">${badge}</span>
+    <button class="pickbtn${o.picked ? ' on' : ''}" title="选中 / 取消">${o.picked ? '★' : '☆'}</button>
+    <figcaption class="foot" title="${esc(o.filename)}">${esc(o.filename)}${size ? ' · ' + size : ''}${lap ? ' · sharp ' + Math.round(lap) : ''}${flags.length ? ' · ' + esc(flags.join(',')) : ''}</figcaption>
+  </figure>`;
+}
+
+function render(){
+  if (!STATE) return;
+  const c = STATE.counts;
+  $('#stats').innerHTML = `<span>运行<b>${c.runs}</b></span><span>图<b>${c.images}</b></span><span>精选<b>${c.picked}</b></span><span>有问题<b>${c.flagged}</b></span>`;
+
+  const picks = STATE.picks || [];
+  $('#picksBox').style.display = picks.length ? '' : 'none';
+  $('#pickCount').textContent = picks.length ? `${picks.length}` : '';
+  $('#pickrow').innerHTML = picks.map(p => {
+    const run = STATE.runs.find(r => (r.outputs || []).some(o => o.key === p.key));
+    const o = run ? run.outputs.find(x => x.key === p.key) : null;
+    return `<div class="pick" data-key="${esc(p.key)}" title="${esc(p.note || '')}">
+      ${o?.url ? `<img src="${o.url}" alt="">` : ''}
+      <span>${esc(p.filename)}</span></div>`;
+  }).join('');
+
+  $('#runs').innerHTML = STATE.runs.map(r => {
+    let outs = r.outputs || [];
+    if (FILTER === 'flagged') outs = outs.filter(o => o.quality && lvl(o) !== 'ok');
+    if (FILTER === 'picked') outs = outs.filter(o => o.picked);
+    if (!outs.length) return '';
+    const p = r.params || {};
+    const dims = p.width && p.height ? `${p.width}×${p.height}` : '';
+    const seeds = outs.map(o => o.seed).filter(v => v !== undefined);
+    return `<article class="run">
+      <div class="runhead">
+        <div class="when">${fmtTime(r.at)}</div>
+        <div class="prompt">
+          <div class="text" title="${esc(p.prompt || '')}">${esc(p.prompt || '(未记录提示词)')}</div>
+          <div class="chips">
+            ${r.template && r.template !== '(未归档)' ? `<span>模板 <code>${esc(r.template)}</code></span>` : ''}
+            ${dims ? `<span>尺寸 <code>${dims}</code></span>` : ''}
+            ${p.steps !== undefined ? `<span>步数 <code>${esc(p.steps)}</code></span>` : ''}
+            ${seeds.length ? `<span>seed <code>${seeds.join(' / ')}</code></span>` : (p.seed !== undefined ? `<span>seed <code>${esc(p.seed)}</code></span>` : '')}
+            ${r.prompt_id ? `<span>id <code>${esc(String(r.prompt_id).slice(0, 8))}</code></span>` : ''}
+          </div>
+        </div>
+      </div>
+      <div class="thumbs">${outs.map(imgCard).join('')}</div>
+    </article>`;
+  }).join('') || '<div class="empty">还没有记录</div>';
+}
+
+async function load(){
+  const r = await fetch('/api/state', { cache: 'no-store' });
+  STATE = await r.json();
+  render();
+}
+
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.pickbtn');
+  if (btn) {
+    e.stopPropagation();
+    const fig = btn.closest('.thumb');
+    const url = btn.classList.contains('on') ? '/api/unpick' : '/api/pick';
+    await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ key: fig.dataset.key, filename: fig.dataset.fn, subfolder: fig.dataset.sub, prompt_id: fig.dataset.pid }) });
+    return load();
+  }
+  const pick = e.target.closest('.pick');
+  if (pick) {
+    await fetch('/api/unpick', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ key: pick.dataset.key }) });
+    return load();
+  }
+});
+
+$('#filter').addEventListener('change', (e) => { FILTER = e.target.value; render(); });
+$('#refresh').addEventListener('click', load);
+load();
+setInterval(() => { if (!document.hidden) load(); }, 15000);
+</script>
+</body>
+</html>

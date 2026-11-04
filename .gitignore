@@ -1,0 +1,59 @@
+# 本机配置（含绝对路径，因人而异）
+comfyforge.config.json
+
+# 生成物与本机状态
+runs/
+.cache/
+.memory/
+models.json
+picks.json
+*.log
+
+# 产出物（视频/图，动辄几十 MB，不进仓库；要发布请走 Release 或网盘）
+out/
+output/
+_trash/
+*.mp4
+*.webm
+*.mkv
+
+# 浏览器自动化产物（截图/快照）
+.playwright-mcp/
+
+# 本机快照（升级前备份，含绝对路径与机器状态）
+backups/
+
+# 私有工作日志（含客户信息与本机路径，不公开）
+docs/journal/
+
+# 委托方素材与提示词（客户 IP，不公开）
+workflows/h3-multiref-user-2pass.json
+workflows/h3-multiref-user-2pass.api.json
+
+# 一次性实验脚本（本机路径硬编码，不公开）
+tools/experiments/
+
+# 依赖实验脚本的内部工具（等把 clip-score 正式化再放出来）
+tools/sheet-batch.mjs
+
+# 本机升级运行手册（全是本机路径，不公开）
+docs/UPGRADE-PLAN.md
+docs/TOOL-AUDIT.md
+
+# 内部复盘与交接（含对话原话、客户信息，不公开）
+docs/交接报告-*.md
+docs/工程复查-*.md
+
+# Python 编译产物
+__pycache__/
+*.pyc
+
+# 具体项目报告（可能含客户信息）
+docs/reports/
+
+# 依赖
+node_modules/
+
+# 杂项
+.DS_Store
+Thumbs.db

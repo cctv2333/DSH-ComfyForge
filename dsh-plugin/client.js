@@ -1,0 +1,1466 @@
+/**
+ * Comfy 实时台 — Client 半（由 client-src/*.js 拼装，勿直接编辑本文件）
+ * 生成：node build-client.mjs
+ */
+window.__ModuleLoader__.load({
+  id: '@local/dsh-comfy-live',
+  factory(require) {
+    const React = require('react')
+    const h = React.createElement
+    const { useCallback, useEffect, useMemo, useRef, useState } = React
+
+    // ─── 00-store.js ───────────────────────────────────────────────────
+    // 00-store.js — 数据层：HTTP + SSE，只负责把后端状态变成 React 可订阅的快照。
+    // 这一层不认识任何 DOM/样式；换 UI 不用改这里。
+
+    const API = '/comfy-live'
+    const PANEL_ID = 'comfy-live'
+
+    const listeners = new Set()
+    let snap = {
+      v: 0,
+      ready: false,
+      connected: false,
+      comfyUrl: '',
+      runs: [],
+      liveId: null,
+      selectedId: null,
+      following: true,
+      saved: null,
+      details: {},
+      error: null,
+      queue: null,
+      tab: 'runs',
+      library: null,
+      workflows: null,
+      wfPreview: null,
+    }
+
+    function set(patch) {
+      snap = { ...snap, ...patch, v: snap.v + 1 }
+      for (const fn of listeners) { try { fn() } catch { /* ignore */ } }
+    }
+    function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn) }
+    function getSnapshot() { return snap }
+
+    function useStore() {
+      if (typeof React.useSyncExternalStore === 'function') {
+        return React.useSyncExternalStore(subscribe, getSnapshot)
+      }
+      const [state, setState] = useState(getSnapshot)
+      useEffect(() => subscribe(() => setState(getSnapshot())), [])
+      return state
+    }
+
+    let stream = null
+    let booted = false
+    const pendingDetail = new Set()
+
+    async function refresh() {
+      try {
+        const r = await fetch(`${API}/api/state`, { cache: 'no-store' })
+        const j = await r.json()
+        if (!j.ok) throw new Error(j.error || 'state 读取失败')
+        const runs = Array.isArray(j.runs) ? j.runs : []
+        set({
+          ready: true,
+          connected: !!j.connected,
+          comfyUrl: j.comfyUrl || '',
+          runs,
+          liveId: j.live || null,
+          saved: j.saved || null,
+          error: null,
+        })
+        if (snap.following || !snap.selectedId) {
+          const target = j.live || (runs[0] && runs[0].id)
+          if (target) select(target, true)
+        }
+      } catch (e) {
+        set({ ready: true, error: String(e && e.message ? e.message : e) })
+      }
+    }
+
+    function select(id, silent) {
+      if (!id) return
+      if (!silent) set({ selectedId: id, following: false })
+      else if (snap.selectedId !== id) set({ selectedId: id })
+      ensureDetail(id)
+    }
+
+    async function ensureDetail(id, attempt) {
+      if (!id) return
+      const cur = snap.details[id]
+      if (cur && cur.graph) return
+      if (pendingDetail.has(id)) return
+      pendingDetail.add(id)
+      try {
+        const r = await fetch(`${API}/api/run?id=${encodeURIComponent(id)}`, { cache: 'no-store' })
+        const j = await r.json()
+        if (j.ok && j.run) {
+          const details = { ...snap.details, [id]: { ...(snap.details[id] || {}), ...j.run } }
+          set({ details })
+        }
+      } catch { /* 图还没就绪 */ } finally {
+        pendingDetail.delete(id)
+      }
+      const after = snap.details[id]
+      const tries = (attempt || 0) + 1
+      if (!after || !after.graph) {
+        if (tries < 20) setTimeout(() => ensureDetail(id, tries), 900)
+      }
+    }
+
+    function mergeRun(id, patch) {
+      set({ runs: snap.runs.map((r) => (r.id === id ? { ...r, ...patch } : r)) })
+    }
+
+    function mergeDetail(id, patch) {
+      const details = { ...snap.details, [id]: { ...(snap.details[id] || {}), ...patch } }
+      set({ details })
+    }
+
+    function handleEvent(ev) {
+      if (!ev || !ev.t) return
+      if (ev.t === 'conn') { set({ connected: !!ev.connected }); return }
+      if (ev.t === 'queue') { set({ queue: ev.remaining }); return }
+      if (ev.t === 'run:new') {
+        const run = ev.run
+        if (!run) return
+        const existed = snap.runs.some((r) => r.id === run.id)
+        set({ runs: [run, ...snap.runs.filter((r) => r.id !== run.id)] })
+        // 只有"真在跑"的才抢选中：历史补录（source=history）不能把用户正在看的切走
+        const isLive = run.status === 'running' || run.source === 'live'
+        if (!existed && isLive && snap.following) select(run.id, true)
+        if (isLive) ensureDetail(run.id)
+        return
+      }
+      if (ev.t === 'run:summary') { mergeRun(ev.run.id, ev.run); return }
+      if (ev.t === 'run:graph') {
+        mergeDetail(ev.id, { graph: ev.graph })
+        mergeRun(ev.id, { label: ev.label })
+        return
+      }
+      if (ev.t === 'nodes') {
+        mergeDetail(ev.id, { nodeStates: ev.states, currentNode: ev.current || null })
+        if (ev.current) mergeRun(ev.id, { currentNode: ev.current })
+        return
+      }
+      if (ev.t === 'progress') {
+        mergeDetail(ev.id, { progress: ev.progress })
+        mergeRun(ev.id, { progress: ev.progress })
+        return
+      }
+      if (ev.t === 'preview') { mergeDetail(ev.id, { preview: ev.data }); return }
+      if (ev.t === 'output') {
+        const detail = snap.details[ev.id] || {}
+        const outs = [...(detail.outputs || []), ev.output]
+        mergeDetail(ev.id, { outputs: outs })
+        const run = snap.runs.find((r) => r.id === ev.id)
+        mergeRun(ev.id, { outputs: outs.length, thumb: (run && run.thumb) || ev.output.url })
+        return
+      }
+      if (ev.t === 'run:end') {
+        mergeRun(ev.id, ev.run)
+        mergeDetail(ev.id, {
+          status: ev.run.status,
+          endedAt: ev.run.endedAt,
+          error: ev.run.error,
+          outputs: ev.outputs || (snap.details[ev.id] || {}).outputs || [],
+        })
+        return
+      }
+    }
+
+    function startStream() {
+      if (stream) return stream
+      try {
+        stream = new EventSource(`${API}/api/events`)
+        stream.onmessage = (e) => {
+          try { handleEvent(JSON.parse(e.data)) } catch { /* ignore */ }
+        }
+        stream.onerror = () => { /* EventSource 自己重连 */ }
+      } catch { /* 浏览器不支持就退回手动刷新 */ }
+      return stream
+    }
+
+    function boot() {
+      if (booted) return
+      booted = true
+      startStream()
+      refresh()
+      setInterval(() => { if (!snap.ready) refresh() }, 4000)
+    }
+
+    // ---- 工作台：产物库 / 工作流库（按需加载，加载过就不再重复请求）
+
+    async function loadLibrary(force) {
+      if (!force && snap.library) return
+      try {
+        const r = await fetch(`${API}/api/library?limit=400`, { cache: 'no-store' })
+        const j = await r.json()
+        set({ library: j && j.ok ? j : { ok: false, items: [], error: (j && j.error) || '读取失败' } })
+      } catch (e) {
+        set({ library: { ok: false, items: [], error: String(e.message || e) } })
+      }
+    }
+
+    async function loadWorkflows(force) {
+      if (!force && snap.workflows) return
+      try {
+        const r = await fetch(`${API}/api/workflows`, { cache: 'no-store' })
+        const j = await r.json()
+        set({ workflows: j && j.ok ? j : { ok: false, items: [], error: (j && j.error) || '读取失败' } })
+      } catch (e) {
+        set({ workflows: { ok: false, items: [], error: String(e.message || e) } })
+      }
+    }
+
+    async function openWorkflow(name) {
+      try {
+        const r = await fetch(`${API}/api/workflow?name=${encodeURIComponent(name)}`, { cache: 'no-store' })
+        const j = await r.json()
+        if (j && j.ok) set({ wfPreview: j })
+      } catch { /* 打不开就算了，别把面板弄崩 */ }
+    }
+
+    // ─── 10-format.js ──────────────────────────────────────────────────
+    // 10-format.js — 纯函数：时间、时长、节点名、参数抽取。没有 React、没有副作用。
+
+    function two(n) { return String(n).padStart(2, '0') }
+
+    function clock(ts) {
+      if (!ts) return '--:--'
+      const d = new Date(ts)
+      return `${two(d.getHours())}:${two(d.getMinutes())}`
+    }
+
+    function dayLabel(ts) {
+      if (!ts) return '更早'
+      const d = new Date(ts)
+      const now = new Date()
+      const sameDay = d.toDateString() === now.toDateString()
+      if (sameDay) return '今天'
+      const y = new Date(now.getTime() - 86400000)
+      if (d.toDateString() === y.toDateString()) return '昨天'
+      return `${d.getMonth() + 1} 月 ${d.getDate()} 日`
+    }
+
+    function dur(ms) {
+      if (!ms || ms < 0) return ''
+      const s = Math.round(ms / 1000)
+      if (s < 60) return `${s} 秒`
+      const m = Math.floor(s / 60)
+      return `${m} 分 ${two(s % 60)} 秒`
+    }
+
+    function isLink(v) { return Array.isArray(v) && v.length === 2 && typeof v[0] === 'string' && typeof v[1] === 'number' }
+
+    function displayName(classType) {
+      return String(classType || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    }
+
+    function statusText(status) {
+      if (status === 'running') return '运行中'
+      if (status === 'success') return '完成'
+      if (status === 'error') return '失败'
+      if (status === 'interrupted') return '已中断'
+      return status || '未知'
+    }
+
+    /** 从 API 图里抽人看得懂的关键参数（不同工作流节点名不一样，按"第一个有该字段的节点"取） */
+    function paramsOf(graph) {
+      const out = []
+      if (!graph) return out
+      const nodes = Object.entries(graph)
+      const pick = (test) => {
+        for (const entry of nodes) { const v = test(entry[1].inputs || {}); if (v !== undefined && v !== null && v !== '') return v }
+        return undefined
+      }
+
+      const prompt = nodes.find(([, n]) => typeof n.inputs?.text === 'string' && String(n.inputs.text).trim())
+      if (prompt) out.push(['提示词', String(prompt[1].inputs.text).trim()])
+
+      const width = pick((i) => i.width)
+      const height = pick((i) => i.height)
+      if (width && height) out.push(['尺寸', `${width} × ${height}`])
+
+      const steps = pick((i) => (typeof i.steps === 'number' ? i.steps : undefined))
+      const cfg = pick((i) => (typeof i.cfg === 'number' ? i.cfg : undefined))
+      const samplerName = pick((i) => (typeof i.sampler_name === 'string' ? i.sampler_name : undefined))
+      const scheduler = pick((i) => (typeof i.scheduler === 'string' ? i.scheduler : undefined))
+      const sampling = [
+        steps !== undefined ? `${steps} 步` : '',
+        cfg !== undefined ? `cfg ${cfg}` : '',
+        samplerName || '',
+        scheduler || '',
+      ].filter(Boolean).join(' · ')
+      if (sampling) out.push(['采样', sampling])
+
+      const seed = pick((i) => (i.seed !== undefined ? i.seed : i.noise_seed))
+      if (seed !== undefined) out.push(['seed', String(seed)])
+
+      const model = pick((i) => i.ckpt_name || i.unet_name || i.model_name)
+      if (model) out.push(['模型', String(model)])
+
+      const frames = pick((i) => (typeof i.num_frames === 'number' ? i.num_frames : undefined))
+      if (frames) out.push(['帧数', String(frames)])
+
+      return out
+    }
+
+    /** 产物按类型分：视频/动图要 <video>，静图要 <img> */
+    function outputKind(o) {
+      const name = String(o && o.filename || '').toLowerCase()
+      if (/\.(mp4|webm|mov|mkv)$/.test(name)) return 'video'
+      if (/\.(gif|webp)$/.test(name)) return 'animation'
+      if (/\.(wav|mp3|flac|ogg)$/.test(name)) return 'audio'
+      return 'image'
+    }
+
+    // ─── 20-graph-layout.js ────────────────────────────────────────────
+    // 20-graph-layout.js — 只算坐标，不画图。
+    // 分层（最长路径）→ 4 轮上下扫描的邻居重心排序（压交叉）→ 每列垂直居中。
+
+    const NODE_W = 244
+    const NODE_H = 68
+    const COL_GAP = 88
+    const ROW_GAP = 26
+    const PAD = 32
+
+    function layoutGraph(graph) {
+      const ids = Object.keys(graph || {})
+      if (!ids.length) return { pos: {}, edges: [], width: 420, height: 240 }
+
+      const parents = Object.fromEntries(ids.map((id) => [id, []]))
+      const children = Object.fromEntries(ids.map((id) => [id, []]))
+      const edges = []
+      for (const [id, n] of Object.entries(graph)) {
+        for (const [name, v] of Object.entries(n.inputs || {})) {
+          if (!isLink(v) || !graph[v[0]]) continue
+          parents[id].push(v[0])
+          children[v[0]].push(id)
+          edges.push({ from: v[0], to: id, input: name })
+        }
+      }
+
+      // 1) 分层：最长路径
+      const rank = {}
+      const visiting = new Set()
+      const calc = (id) => {
+        if (rank[id] !== undefined) return rank[id]
+        if (visiting.has(id)) return 0
+        visiting.add(id)
+        let d = 0
+        for (const p of parents[id] || []) d = Math.max(d, calc(p) + 1)
+        visiting.delete(id)
+        rank[id] = d
+        return d
+      }
+      for (const id of ids) calc(id)
+
+      const columns = {}
+      for (const id of ids) (columns[rank[id]] ||= []).push(id)
+      const ranks = Object.keys(columns).map(Number).sort((a, b) => a - b)
+      const order = {}
+      for (const r of ranks) order[r] = columns[r].slice().sort((a, b) => Number(a) - Number(b))
+
+      // 2) 排序：4 轮，下扫按父节点重心、上扫按子节点重心
+      const indexIn = (id, r) => {
+        const col = order[r]
+        return col ? col.indexOf(id) : -1
+      }
+      const sweep = (r, neighborRank, neighborsOf) => {
+        const col = order[r]
+        if (!col || col.length < 2) return
+        const score = new Map()
+        for (const id of col) {
+          const ns = neighborsOf(id).map((n) => indexIn(n, neighborRank)).filter((x) => x >= 0)
+          score.set(id, ns.length ? ns.reduce((s, x) => s + x, 0) / ns.length : 1e9)
+        }
+        col.sort((a, b) => (score.get(a) ?? 1e9) - (score.get(b) ?? 1e9))
+      }
+      for (let pass = 0; pass < 4; pass++) {
+        for (const r of ranks) sweep(r, r - 1, (id) => parents[id] || [])
+        for (let i = ranks.length - 1; i >= 0; i--) sweep(ranks[i], ranks[i] + 1, (id) => children[id] || [])
+      }
+
+      // 3) 坐标：每列自上而下堆，整列相对最高列垂直居中
+      const maxRows = Math.max(...ranks.map((r) => order[r].length))
+      const colHeight = (n) => Math.max(0, n - 1) * (NODE_H + ROW_GAP)
+      const height = PAD * 2 + colHeight(maxRows) + NODE_H
+      const pos = {}
+      for (const r of ranks) {
+        const col = order[r]
+        const top = PAD + (colHeight(maxRows) - colHeight(col.length)) / 2
+        col.forEach((id, i) => {
+          pos[id] = { x: PAD + r * (NODE_W + COL_GAP), y: top + i * (NODE_H + ROW_GAP) }
+        })
+      }
+
+      return {
+        pos,
+        edges,
+        width: PAD * 2 + (ranks.length - 1) * (NODE_W + COL_GAP) + NODE_W,
+        height,
+      }
+    }
+
+    // ─── 30-components.js ──────────────────────────────────────────────
+    // 30-components.js — 通用小组件。只认 props，不认数据来源。
+
+    /** 只在需要时每秒重渲染一次（跑动中的耗时），别把整个面板拖进 1s 心跳 */
+    function useTick(ms, enabled) {
+      const [, force] = useState(0)
+      useEffect(() => {
+        if (!enabled) return undefined
+        const id = setInterval(() => force((n) => n + 1), ms)
+        return () => clearInterval(id)
+      }, [ms, enabled])
+    }
+
+    function Section({ title, aside, children, bodyClass }) {
+      return h('section', { className: 'cfl-card' },
+        h('div', { className: 'cfl-card-head' },
+          h('h2', { className: 'cfl-card-title' }, title),
+          aside ? h('span', { className: 'cfl-card-aside' }, aside) : null),
+        h('div', { className: `cfl-card-body${bodyClass ? ` ${bodyClass}` : ''}` }, children))
+    }
+
+    function Dot({ status }) {
+      return h('span', { className: `cfl-dot is-${status || 'idle'}`, 'aria-hidden': true })
+    }
+
+    function Progress({ value, max, indeterminate }) {
+      const pct = max > 0 ? Math.max(2, Math.round((value / max) * 100)) : 0
+      return h('div', { className: `cfl-progress${indeterminate ? ' is-indeterminate' : ''}` },
+        h('i', { style: { width: indeterminate ? '38%' : `${pct}%` } }))
+    }
+
+    function KV({ rows }) {
+      return h('dl', { className: 'cfl-kv' }, rows.map(([k, v], i) =>
+        h('div', { className: 'cfl-kv-row', key: i },
+          h('dt', null, k),
+          h('dd', { title: typeof v === 'string' ? v : undefined }, v))))
+    }
+
+    function Empty({ title, hint }) {
+      return h('div', { className: 'cfl-empty' },
+        h('p', { className: 'cfl-empty-title' }, title),
+        hint ? h('p', { className: 'cfl-empty-hint' }, hint) : null)
+    }
+
+    function MediaThumb({ item, className }) {
+      const kind = outputKind(item)
+      if (kind === 'video') {
+        return h('video', {
+          className, src: item.url, muted: true, loop: true, autoPlay: true, playsInline: true, preload: 'metadata',
+        })
+      }
+      if (kind === 'audio') {
+        return h('span', { className: 'cfl-audio-badge' }, '音频')
+      }
+      return h('img', { className, src: item.url, alt: item.filename || '', loading: 'lazy' })
+    }
+
+    function Legend() {
+      const items = [
+        ['cfl-lg-idle', '待跑'],
+        ['cfl-lg-run', '在跑'],
+        ['cfl-lg-done', '完成'],
+        ['cfl-lg-cache', '缓存'],
+        ['cfl-lg-error', '失败'],
+      ]
+      return h('div', { className: 'cfl-legend' }, items.map(([cls, text]) =>
+        h('span', { key: cls, className: `cfl-legend-item ${cls}` }, h('i', null), text)))
+    }
+
+    // ─── 35-workbench.js ───────────────────────────────────────────────
+    // 35-workbench.js — 工作台外壳：左侧导航 + 产物库 + 工作流库。
+    // 和 40-views（执行视图）平级；三者共用 00-store。
+
+    function formatBytes(n) {
+      if (!n) return ''
+      if (n < 1024) return `${n} B`
+      if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`
+      return `${(n / 1024 / 1024).toFixed(1)} MB`
+    }
+
+    function ago(ts) {
+      if (!ts) return ''
+      const d = Date.now() - ts
+      if (d < 60000) return '刚刚'
+      if (d < 3600000) return `${Math.floor(d / 60000)} 分钟前`
+      if (d < 86400000) return `${Math.floor(d / 3600000)} 小时前`
+      return `${Math.floor(d / 86400000)} 天前`
+    }
+
+    const RAIL = [
+      { id: 'runs', label: '执行', icon: 'M4 5h16M4 12h10M4 19h7' },
+      { id: 'assets', label: '产物', icon: 'M4 5h7v7H4zM13 5h7v7h-7zM4 14h7v5H4zM13 14h7v5h-7z' },
+      { id: 'workflows', label: '工作流', icon: 'M5 6h6v4H5zM13 14h6v4h-6zM8 10v4h5' },
+    ]
+
+    function Rail({ tab, s, onChange }) {
+      const counts = {
+        runs: (s.runs || []).length,
+        assets: s.library && s.library.total ? s.library.total : null,
+        workflows: s.workflows && s.workflows.items ? s.workflows.items.length : null,
+      }
+      return h('nav', { className: 'cfl-rail', 'aria-label': '工作台' },
+        h('div', { className: 'cfl-rail-title' }, '工作台'),
+        RAIL.map((item) => h('button', {
+          key: item.id,
+          type: 'button',
+          className: `cfl-rail-item${tab === item.id ? ' is-active' : ''}`,
+          onClick: () => onChange(item.id),
+          title: item.label,
+        },
+        h('svg', { width: 18, height: 18, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round' },
+          h('path', { d: item.icon })),
+        h('span', null, item.label),
+        counts[item.id] ? h('em', null, counts[item.id]) : null)))
+    }
+
+    function AssetsView({ s }) {
+      const lib = s.library
+      const [kind, setKind] = useState('all')
+      const [open, setOpen] = useState(null)
+      // 一次只挂 60 张：328 张原图同时加载会把滚动和首屏拖死
+      const [limit, setLimit] = useState(60)
+      useEffect(() => { setLimit(60) }, [kind])
+      const items = (lib && lib.items) || []
+      const filtered = kind === 'all' ? items : items.filter((x) => (x.kind || 'image') === kind)
+      const shown = filtered.slice(0, limit)
+      const counts = { all: items.length, image: 0, video: 0, animation: 0 }
+      for (const x of items) counts[x.kind || 'image'] = (counts[x.kind || 'image'] || 0) + 1
+
+      const chips = [['all', `全部 ${counts.all}`], ['image', `图片 ${counts.image}`], ['video', `视频 ${counts.video}`], ['animation', `动图 ${counts.animation}`]]
+
+      return h('div', { className: 'cfl-w-content' },
+        h('div', { className: 'cfl-w-head' },
+          h('div', null,
+            h('h2', { className: 'cfl-w-title' }, '产物库'),
+            h('p', { className: 'cfl-w-sub' }, lib && lib.ok
+              ? `直接扫 ComfyUI 的 output 目录 · ${lib.total} 个文件`
+              : (lib && lib.error) || '读取中…')),
+          h('div', { className: 'cfl-w-actions' },
+            h('div', { className: 'cfl-chips' }, chips.map(([id, text]) => h('button', {
+              key: id,
+              type: 'button',
+              className: `cfl-chip${kind === id ? ' is-on' : ''}`,
+              onClick: () => setKind(id),
+            }, text))),
+            h('button', { type: 'button', className: 'cfl-btn', onClick: () => loadLibrary(true) }, '刷新'))),
+
+        !lib
+          ? h('div', { className: 'cfl-w-empty' }, '正在读取产物…')
+          : !lib.ok
+            ? h('div', { className: 'cfl-w-empty' }, lib.error || '读不到产物目录')
+            : filtered.length === 0
+              ? h('div', { className: 'cfl-w-empty' }, '这个分类下还没有文件')
+              : h('div', { className: 'cfl-grid-wrap' },
+                h('div', { className: 'cfl-grid' }, shown.map((item) => h('button', {
+                  key: `${item.subfolder}/${item.filename}`,
+                  type: 'button',
+                  className: 'cfl-tile',
+                  onClick: () => setOpen(item),
+                  title: `${item.subfolder ? item.subfolder + '/' : ''}${item.filename}`,
+                },
+                h('span', { className: 'cfl-tile-frame' },
+                  item.kind === 'video'
+                    ? h('video', { className: 'cfl-tile-media', src: `${item.url}#t=0.1`, muted: true, preload: 'metadata', playsInline: true })
+                    : h('img', { className: 'cfl-tile-media', src: item.url, alt: '', loading: 'lazy', decoding: 'async' }),
+                  item.kind === 'video' ? h('span', { className: 'cfl-tile-badge' }, '视频') : null,
+                  h('span', { className: 'cfl-tile-meta' },
+                    h('span', { className: 'cfl-tile-name' }, item.filename),
+                    h('span', { className: 'cfl-tile-sub' },
+                      [item.w && item.h ? `${item.w}×${item.h}` : '', ago(item.mtime), formatBytes(item.bytes)]
+                        .filter(Boolean).join(' · '))))))),
+                limit < filtered.length
+                  ? h('div', { className: 'cfl-more' },
+                    h('button', {
+                      type: 'button',
+                      className: 'cfl-btn',
+                      onClick: () => setLimit((n) => n + 60),
+                    }, `加载更多（还有 ${filtered.length - limit} 个）`))
+                  : null),
+
+        open
+          ? h('div', { className: 'cfl-lightbox', onClick: () => setOpen(null) },
+            h('div', { className: 'cfl-lightbox-body', onClick: (e) => e.stopPropagation() },
+              h('div', { className: 'cfl-lightbox-head' },
+                h('span', null, `${open.subfolder ? open.subfolder + ' / ' : ''}${open.filename}`),
+                h('button', { type: 'button', className: 'cfl-icon-btn', onClick: () => setOpen(null) }, '×')),
+              open.kind === 'video'
+                ? h('video', { className: 'cfl-lightbox-media', src: open.url, controls: true, autoPlay: true, loop: true, playsInline: true })
+                : h('img', { className: 'cfl-lightbox-media', src: open.url, alt: open.filename }),
+              h('div', { className: 'cfl-lightbox-foot' },
+                h('a', { className: 'cfl-btn', href: open.url, target: '_blank', rel: 'noreferrer' }, '在新标签打开'),
+                h('span', { className: 'cfl-w-sub' }, `${formatBytes(open.bytes)} · ${open.mtime ? new Date(open.mtime).toLocaleString('zh-CN', { hour12: false }) : ''}`))))
+          : null)
+    }
+
+    function WorkflowsView({ s, onBack }) {
+      const list = s.workflows
+      if (s.wfPreview) {
+        return h('div', { className: 'cfl-w-content' },
+          h('div', { className: 'cfl-w-head' },
+            h('div', null,
+              h('h2', { className: 'cfl-w-title' }, s.wfPreview.name),
+              h('p', { className: 'cfl-w-sub' }, s.wfPreview.title || '只读预览 · 这是 workflows/ 里的模板')),
+            h('div', { className: 'cfl-w-actions' },
+              h('button', { type: 'button', className: 'cfl-btn', onClick: onBack }, '返回列表'))),
+          h('div', { className: 'cfl-w-canvas' },
+            h(GraphBoard, {
+              preview: true,
+              run: { id: s.wfPreview.name, label: s.wfPreview.name, status: 'success', error: null, nodeCount: Object.keys(s.wfPreview.graph || {}).length },
+              detail: { graph: s.wfPreview.graph, nodeStates: {} },
+            })))
+      }
+
+      const items = (list && list.items) || []
+      return h('div', { className: 'cfl-w-content' },
+        h('div', { className: 'cfl-w-head' },
+          h('div', null,
+            h('h2', { className: 'cfl-w-title' }, '工作流库'),
+            h('p', { className: 'cfl-w-sub' }, `workflows/ 里的模板 · ${items.length} 个`)),
+          h('div', { className: 'cfl-w-actions' },
+            h('button', { type: 'button', className: 'cfl-btn', onClick: () => loadWorkflows(true) }, '刷新'))),
+        !list
+          ? h('div', { className: 'cfl-w-empty' }, '正在读取模板…')
+          : items.length === 0
+            ? h('div', { className: 'cfl-w-empty' }, 'workflows/ 目录里没有 .json 模板')
+            : h('div', { className: 'cfl-rows' }, items.map((item) => h('button', {
+              key: item.name,
+              type: 'button',
+              className: 'cfl-row',
+              onClick: () => openWorkflow(item.name),
+            },
+            h('span', { className: 'cfl-row-main' },
+              h('span', { className: 'cfl-row-title' }, item.name),
+              h('span', { className: 'cfl-row-sub' }, item.title || '（无标题）')),
+            h('span', { className: 'cfl-row-tag' }, `${item.nodes} 节点`),
+            item.model ? h('span', { className: 'cfl-row-tag' }, item.model) : null,
+            h('span', { className: 'cfl-row-time' }, ago(item.updated))))))
+    }
+
+    function Workbench({ s, children }) {
+      const onTab = useCallback((tab) => {
+        set({ tab })
+        if (tab === 'assets') loadLibrary()
+        if (tab === 'workflows') loadWorkflows()
+      }, [])
+      return h('div', { className: 'cfl-shell' },
+        h(Rail, { tab: s.tab, s, onChange: onTab }),
+        children)
+    }
+
+    // ─── 37-float.js ───────────────────────────────────────────────────
+    // 37-float.js — 右侧浮窗：聊天区不动，任务进度挂在右边。
+    // 为什么不做成主面板：主面板会替换对话区（用户实测：点开就看不到聊天了）。
+
+    const FLOAT_KEY = 'cfl.float.v1'
+
+    function loadFloat() {
+      try {
+        const j = JSON.parse(localStorage.getItem(FLOAT_KEY) || '{}')
+        return {
+          open: !!j.open,
+          w: Math.max(420, Math.min(900, Number(j.w) || 520)),
+          dismissedAuto: !!j.dismissedAuto,
+        }
+      } catch { return { open: false, w: 520, dismissedAuto: false } }
+    }
+
+
+    let floatState = loadFloat()
+    const floatListeners = new Set()
+
+    function useFloat() {
+      const [v, setV] = useState(floatState)
+      useEffect(() => {
+        const fn = () => setV(floatState)
+        floatListeners.add(fn)
+        return () => floatListeners.delete(fn)
+      }, [])
+      return v
+    }
+
+    function setFloat(patch) {
+      floatState = { ...floatState, ...patch }
+      try { localStorage.setItem(FLOAT_KEY, JSON.stringify(floatState)) } catch { /* ignore */ }
+      for (const fn of floatListeners) { try { fn() } catch { /* ignore */ } }
+    }
+
+    /** 需要 ctx 才能"全屏打开"，所以由 apply 注入 */
+    function makeFloatPanel(ctx) {
+      return function FloatPanel(props) {
+        const s = useStore()
+        const f = useFloat()
+        const gripRef = useRef(null)
+        // 主面板是否"真的在显示"：DSH 会把面板挂着但隐藏，
+        // 所以必须看可见性（offsetParent），不能只看节点存不存在。
+        const [mainOpen, setMainOpen] = useState(false)
+        useEffect(() => {
+          const check = () => {
+            const el = document.querySelector('.cfl-main:not(.is-compact)')
+            setMainOpen(!!el && el.offsetParent !== null)
+          }
+          check()
+          const id = setInterval(check, 600)
+          return () => clearInterval(id)
+        }, [])
+        const live = s.runs.find((r) => r.status === 'running') || null
+
+        // 有新任务开始：自动把侧栏叫出来（除非用户手动收起过）
+        useEffect(() => {
+          if (live && !floatState.open && !floatState.dismissedAuto) setFloat({ open: true })
+        }, [live ? live.id : null])
+
+        // 拖左边缘改宽度
+        const startResize = (e) => {
+          if (e.button !== 0) return
+          e.preventDefault()
+          const startX = e.clientX
+          const startW = floatState.w
+          const move = (ev) => setFloat({ w: Math.max(420, Math.min(900, startW + (startX - ev.clientX))) })
+          const up = () => {
+            window.removeEventListener('pointermove', move)
+            window.removeEventListener('pointerup', up)
+          }
+          window.addEventListener('pointermove', move)
+          window.addEventListener('pointerup', up)
+        }
+
+        if (!f.open || mainOpen) return null
+        const step = live && live.progress && live.progress.max ? `${live.progress.value}/${live.progress.max} 步` : ''
+
+        return h('div', { className: 'cfl-float', style: { width: f.w } },
+          h('div', { className: 'cfl-float-bar' },
+            h('span', { className: `cfl-conn${s.connected ? ' is-on' : ''}` }),
+            h('b', { className: 'cfl-float-title' }, 'Comfy 工作台'),
+            h('span', { className: 'cfl-float-meta' },
+              live ? `正在跑${step ? ` · ${step}` : ''}` : (s.ready ? `${s.runs.length} 次执行` : '连接中…')),
+            h('button', {
+              type: 'button',
+              className: 'cfl-icon-btn',
+              title: '在主页打开',
+              onClick: () => { try { ctx.layout.selectPanel(PANEL_ID) } catch { /* ignore */ } },
+            }, '⤢'),
+            h('button', {
+              type: 'button',
+              className: 'cfl-icon-btn',
+              title: '收起（下次有任务时还会自动出现）',
+              onClick: () => setFloat({ open: false }),
+            }, '×')),
+          h('div', { className: 'cfl-float-body' }, h(Panel, { compact: true })),
+          h('div', { className: 'cfl-float-grip', ref: gripRef, onPointerDown: startResize, title: '拖动改宽度' }))
+      }
+    }
+
+    // ─── 40-views.js ───────────────────────────────────────────────────
+    // 40-views.js — 页面分块。每块独立：TopBar / Timeline / GraphBoard / Inspector / Panel。
+    // 换样式只动 50-styles.js，换数据只看 00-store.js。
+
+    function TopBar({ s, live, onFollow, onJump }) {
+      const tab = s.tab || 'runs'
+      const running = live && live.status === 'running'
+      const step = live && live.progress && live.progress.max
+        ? `${live.progress.value}/${live.progress.max} 步`
+        : '准备中'
+
+      // 动作跟着当前模块走：在产物库里不该出现"跳到进行中"
+      const actions = []
+      if (tab === 'runs') {
+        actions.push(running
+          ? h('span', { key: 'st', className: 'cfl-pill is-run' }, h('i', null), `正在跑 · ${step}`)
+          : h('span', { key: 'st', className: 'cfl-pill' }, s.connected ? '空闲' : '未连接'))
+        if (s.queue) actions.push(h('span', { key: 'q', className: 'cfl-pill' }, `队列 ${s.queue}`))
+        actions.push(h('button', {
+          key: 'follow',
+          type: 'button',
+          className: `cfl-btn${s.following ? ' is-on' : ''}`,
+          onClick: onFollow,
+          title: '新任务开始时自动切到它',
+        }, s.following ? '跟随最新' : '跟随已关'))
+        actions.push(h('button', {
+          key: 'jump',
+          type: 'button',
+          className: 'cfl-btn',
+          onClick: onJump,
+          disabled: !live,
+        }, '跳到进行中'))
+        actions.push(h('button', {
+          key: 'float',
+          type: 'button',
+          className: 'cfl-btn',
+          title: '右侧浮窗：一边聊天一边看进度',
+          onClick: () => setFloat({ open: true }),
+        }, '浮窗'))
+      } else if (tab === 'assets') {
+        actions.push(h('span', { key: 'n', className: 'cfl-pill' },
+          s.library && s.library.total ? `${s.library.total} 个文件` : '读取中…'))
+        actions.push(h('button', { key: 'r', type: 'button', className: 'cfl-btn', onClick: () => loadLibrary(true) }, '刷新'))
+      } else {
+        actions.push(h('span', { key: 'n', className: 'cfl-pill' },
+          s.workflows && s.workflows.items ? `${s.workflows.items.length} 个模板` : '读取中…'))
+        actions.push(h('button', { key: 'r', type: 'button', className: 'cfl-btn', onClick: () => loadWorkflows(true) }, '刷新'))
+      }
+      if (s.comfyUrl) {
+        actions.push(h('a', {
+          key: 'comfy',
+          className: 'cfl-btn is-link',
+          href: s.comfyUrl,
+          target: '_blank',
+          rel: 'noreferrer',
+        }, '打开 ComfyUI'))
+      }
+
+      return h('header', { className: 'cfl-top' },
+        h('div', { className: 'cfl-brand' },
+          h('span', { className: `cfl-conn${s.connected ? ' is-on' : ''}`, 'aria-hidden': true }),
+          h('h1', { className: 'cfl-brand-title' }, 'Comfy 工作台'),
+          h('span', { className: 'cfl-brand-url' }, s.comfyUrl || '连不上 ComfyUI')),
+        h('div', { className: 'cfl-top-actions' }, actions))
+    }
+
+    function Timeline({ s, onSelect }) {
+      const runs = s.runs || []
+      if (!runs.length) {
+        return h('div', { className: 'cfl-col cfl-col-timeline' },
+          h('div', { className: 'cfl-col-head' }, h('h2', null, '执行时间线'), h('span', null, '0')),
+          h('div', { className: 'cfl-col-body' },
+            h(Empty, {
+              title: s.ready && !s.connected ? '连不上 ComfyUI' : '还没有执行记录',
+              hint: s.ready && !s.connected
+                ? '确认 ComfyUI 在本机 8188 跑着，然后刷新。'
+                : '跑一次任务，这里会实时出现，并留下这次执行的完整节点图。',
+            })))
+      }
+
+      const groups = []
+      for (const run of runs) {
+        const key = run.status === 'running' ? '正在跑' : dayLabel(run.startedAt)
+        const last = groups[groups.length - 1]
+        if (last && last.key === key) last.items.push(run)
+        else groups.push({ key, items: [run] })
+      }
+
+      return h('div', { className: 'cfl-col cfl-col-timeline' },
+        h('div', { className: 'cfl-col-head' },
+          h('h2', null, '执行时间线'),
+          h('span', null, `${runs.length} 次`)),
+        h('div', { className: 'cfl-col-body' },
+          groups.map((g) => h('div', { className: 'cfl-group', key: g.key },
+            h('div', { className: 'cfl-group-label' }, g.key),
+            g.items.map((run) => {
+              const active = run.id === s.selectedId
+              return h('button', {
+                key: run.id,
+                type: 'button',
+                className: `cfl-run${active ? ' is-active' : ''}`,
+                onClick: () => onSelect(run.id),
+              },
+              h(Dot, { status: run.status }),
+              h('span', { className: 'cfl-run-text' },
+                h('span', { className: 'cfl-run-label' }, run.label || '执行'),
+                h('span', { className: 'cfl-run-meta' },
+                  clock(run.startedAt),
+                  run.status === 'running' ? ' · 进行中' : run.durationMs ? ` · ${dur(run.durationMs)}` : '',
+                  run.outputs ? ` · ${run.outputs} 个产物` : '')),
+              run.thumb ? h('img', { className: 'cfl-run-thumb', src: run.thumb, alt: '' }) : null)
+            })))))
+    }
+
+    function GraphBoard({ run, detail, preview }) {
+      const graph = detail && detail.graph
+      const l = useMemo(() => layoutGraph(graph || {}), [graph])
+      const wrapRef = useRef(null)
+      // 默认 100%：39 节点的图缩到 28% 等于看不见。要看全图按「适应」。
+      const [view, setView] = useState({ x: 20, y: 20, k: 1 })
+      const viewRef = useRef(view)
+      viewRef.current = view
+
+      // 适应窗口：整图缩放进画布并居中（只在用户点「适应」/双击时发生，不自动改视角）
+      const fit = useCallback(() => {
+        const el = wrapRef.current
+        if (!el) return
+        const w = el.clientWidth - 48
+        const hgt = el.clientHeight - 48
+        if (w <= 0 || hgt <= 0) return
+        const k = Math.max(0.15, Math.min(1, Math.min(w / l.width, hgt / l.height)))
+        setView({
+          k,
+          x: (el.clientWidth - l.width * k) / 2,
+          y: (el.clientHeight - l.height * k) / 2,
+        })
+      }, [l.width, l.height])
+
+      // 换了一次执行：把视角重置回 100%，否则会沿用上一张图的缩放
+      const runKey = run ? run.id : ''
+      useEffect(() => {
+        setView({ x: 20, y: 20, k: 1 })
+      }, [runKey])
+
+      // 滚轮缩放到鼠标位置（必须 passive:false 才能 preventDefault）
+      useEffect(() => {
+        const el = wrapRef.current
+        if (!el) return
+        const onWheel = (e) => {
+          e.preventDefault()
+          const rect = el.getBoundingClientRect()
+          const px = e.clientX - rect.left
+          const py = e.clientY - rect.top
+          const cur = viewRef.current
+          const next = Math.max(0.25, Math.min(2.5, cur.k * Math.exp(-e.deltaY * 0.0015)))
+          const r = next / cur.k
+          setView({ k: next, x: px - (px - cur.x) * r, y: py - (py - cur.y) * r })
+        }
+        el.addEventListener('wheel', onWheel, { passive: false })
+        return () => el.removeEventListener('wheel', onWheel)
+      }, [])
+
+      const zoomBy = useCallback((factor) => {
+        const el = wrapRef.current
+        if (!el) return
+        const cur = viewRef.current
+        const next = Math.max(0.25, Math.min(2.5, cur.k * factor))
+        const r = next / cur.k
+        const cx = el.clientWidth / 2
+        const cy = el.clientHeight / 2
+        setView({ k: next, x: cx - (cx - cur.x) * r, y: cy - (cy - cur.y) * r })
+      }, [])
+
+      // 按住拖动平移
+      const onPointerDown = (e) => {
+        if (e.button !== 0) return
+        const el = wrapRef.current
+        if (!el) return
+        // 拖画布不该触发选字/原生拖拽（否则会拖出一片选区、像复制粘贴）
+        e.preventDefault()
+        const start = { px: e.clientX, py: e.clientY, x: viewRef.current.x, y: viewRef.current.y }
+        try { el.setPointerCapture(e.pointerId) } catch { /* ignore */ }
+        const move = (ev) => setView({
+          ...viewRef.current,
+          x: start.x + (ev.clientX - start.px),
+          y: start.y + (ev.clientY - start.py),
+        })
+        const up = (ev) => {
+          try { el.releasePointerCapture(ev.pointerId) } catch { /* ignore */ }
+          el.removeEventListener('pointermove', move)
+          el.removeEventListener('pointerup', up)
+          el.removeEventListener('pointercancel', up)
+        }
+        el.addEventListener('pointermove', move)
+        el.addEventListener('pointerup', up)
+        el.addEventListener('pointercancel', up)
+      }
+
+      const nodeCount = graph ? Object.keys(graph).length : 0
+      const edgeCount = l.edges.length
+
+      return h('div', { className: 'cfl-col cfl-col-canvas' },
+        h('div', { className: 'cfl-col-head' },
+          h('h2', null, preview ? '模板节点图' : '执行画布'),
+          h('div', { className: 'cfl-tools' },
+            h('span', { className: 'cfl-tools-meta' }, graph ? `${nodeCount} 节点 · ${edgeCount} 连线` : '等待节点图'),
+            h('button', { type: 'button', className: 'cfl-icon-btn', title: '缩小', onClick: () => zoomBy(1 / 1.2), disabled: !graph }, '−'),
+            h('span', { className: 'cfl-zoom-val' }, `${Math.round(view.k * 100)}%`),
+            h('button', { type: 'button', className: 'cfl-icon-btn', title: '放大', onClick: () => zoomBy(1.2), disabled: !graph }, '＋'),
+            h('button', { type: 'button', className: 'cfl-tool-btn', onClick: fit, disabled: !graph }, '适应'))),
+        h('div', {
+          className: 'cfl-canvas-wrap',
+          ref: wrapRef,
+          onPointerDown,
+          onDragStart: (e) => e.preventDefault(),
+          onDoubleClick: fit,
+        },
+          !graph
+            ? h(Empty, { title: '正在取这次执行的节点图…', hint: '图来自 ComfyUI 的 /queue 或 /history，不是示意图。' })
+            : h('div', {
+              className: 'cfl-canvas-stage',
+              style: { transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})` },
+            },
+            h('svg', {
+              width: l.width,
+              height: l.height,
+              viewBox: `0 0 ${l.width} ${l.height}`,
+            }, [
+                h('defs', { key: 'defs' },
+                  h('marker', {
+                    id: 'cfl-arrow', viewBox: '0 0 10 10', refX: 9, refY: 5,
+                    markerWidth: 5, markerHeight: 5, orient: 'auto-start-reverse',
+                  }, h('path', { d: 'M0,0 L10,5 L0,10 z', fill: 'var(--dsw-alias-border-l2)' }))),
+                ...l.edges.map((e) => {
+                  const a = l.pos[e.from]
+                  const b = l.pos[e.to]
+                  if (!a || !b) return null
+                  const x1 = a.x + NODE_W
+                  const y1 = a.y + NODE_H / 2
+                  const x2 = b.x
+                  const y2 = b.y + NODE_H / 2
+                  const mx = (x1 + x2) / 2
+                  const src = (detail.nodeStates || {})[e.from]
+                  return h('path', {
+                    key: `e-${e.from}-${e.to}-${e.input}`,
+                    d: `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`,
+                    className: src === 'done' || src === 'cached' ? 'cfl-edge is-done' : 'cfl-edge',
+                    markerEnd: 'url(#cfl-arrow)',
+                  })
+                }),
+                ...Object.entries(graph).map(([id, n]) => {
+                  const p = l.pos[id]
+                  if (!p) return null
+                  const st = (detail.nodeStates || {})[id] || 'pending'
+                  const isError = st === 'error' || (run && run.error && run.error.node === id)
+                  return h('g', {
+                    key: `n-${id}`,
+                    transform: `translate(${p.x},${p.y})`,
+                    className: `cfl-node is-${isError && st !== 'running' ? 'error' : st}`,
+                  },
+                  h('rect', { className: 'cfl-node-box', width: NODE_W, height: NODE_H, rx: 10 }),
+                  h('text', { className: 'cfl-node-title', x: 16, y: 27 }, displayName(n.class_type).slice(0, 26)),
+                  h('text', { className: 'cfl-node-sub', x: 16, y: 47 },
+                    `#${id}${st === 'running' ? ' · 正在跑' : st === 'done' ? ' · 完成' : st === 'cached' ? ' · 缓存' : st === 'error' ? ' · 失败' : ''}`),
+                  h('circle', { className: 'cfl-node-state', cx: NODE_W - 16, cy: 18, r: 5 }))
+                }),
+            ])),
+          h('div', { className: 'cfl-canvas-hint' }, '拖动平移 · 滚轮缩放 · 双击复位')),
+        preview ? null : h('div', { className: 'cfl-col-foot' }, h(Legend)))
+    }
+
+    function Inspector({ run, detail }) {
+      useTick(1000, !!(run && run.status === 'running'))
+      if (!run) {
+        return h('div', { className: 'cfl-col cfl-col-inspector' },
+          h(Empty, { title: '左侧选一次执行', hint: '选中的这次会在这里显示状态、预览、产物和参数。' }))
+      }
+
+      const d = detail || {}
+      const graph = d.graph || null
+      const prog = d.progress || run.progress || null
+      const total = run.nodeCount || (graph ? Object.keys(graph).length : 0)
+      const done = d.nodeStates
+        ? Object.values(d.nodeStates).filter((x) => x === 'done' || x === 'cached').length
+        : 0
+      const outputs = d.outputs || []
+      const imageOut = outputs.filter((o) => outputKind(o) !== 'audio')
+      const preview = d.preview || (imageOut.length ? imageOut[imageOut.length - 1].url : null)
+      const previewKind = imageOut.length ? outputKind(imageOut[imageOut.length - 1]) : 'image'
+      const params = paramsOf(graph)
+
+      return h('div', { className: 'cfl-col cfl-col-inspector' },
+        h(Section, { title: '这次执行', aside: statusText(run.status) },
+          h(KV, {
+            rows: [
+              ['开始', clock(run.startedAt)],
+              ['耗时', run.status === 'running' ? dur(Date.now() - run.startedAt) : (dur(run.durationMs) || '—')],
+              ['节点', total ? `${done} / ${total}` : '—'],
+              ['编号', String(run.id).slice(0, 8)],
+            ],
+          }),
+          run.status === 'running'
+            ? h('div', { className: 'cfl-progress-wrap' },
+              h(Progress, {
+                value: prog ? prog.value : 0,
+                max: prog ? prog.max : 0,
+                indeterminate: !prog || !prog.max,
+              }),
+              h('div', { className: 'cfl-progress-meta' },
+                h('span', null, prog && prog.max ? `第 ${prog.value} / ${prog.max} 步` : '载入模型 / 处理中'),
+                h('span', null, `${done} / ${total} 节点`)),
+              h('button', {
+                type: 'button',
+                className: 'cfl-btn is-danger',
+                onClick: () => { fetch(`${API}/api/interrupt`, { method: 'POST' }).catch(() => {}) },
+              }, '中断这次'))
+            : null,
+          run.error
+            ? h('div', { className: 'cfl-error' },
+              h('b', null, '执行失败'),
+              h('p', null, String(run.error.message || run.error).slice(0, 240)))
+            : null),
+
+        h(Section, { title: '实时预览', aside: run.status === 'running' ? '跟随采样' : null },
+          preview
+            ? (previewKind === 'video'
+              ? h('video', { className: 'cfl-preview-media', src: preview, muted: true, loop: true, autoPlay: true, playsInline: true })
+              : h('img', { className: 'cfl-preview-media', src: preview, alt: '实时预览' }))
+            : h('div', { className: 'cfl-preview-blank' },
+              run.status === 'running' ? '等第一帧…' : '这次没有画面产物')),
+
+        outputs.length
+          ? h(Section, { title: '产物', aside: `${outputs.length} 个` },
+            h('div', { className: 'cfl-thumbs' }, outputs.slice(-9).map((o, i) =>
+              h('a', {
+                key: `${o.filename}-${i}`,
+                className: 'cfl-thumb',
+                href: o.url,
+                target: '_blank',
+                rel: 'noreferrer',
+                title: o.filename,
+              }, h(MediaThumb, { item: o, className: 'cfl-thumb-media' })))))
+          : null,
+
+        params.length
+          ? h(Section, { title: '参数' },
+            h('div', { className: 'cfl-params' }, params.map(([k, v], i) =>
+              h('div', { className: 'cfl-param', key: i },
+                h('span', null, k),
+                h('p', null, String(v))))))
+          : null
+      )
+    }
+
+    function Panel({ compact }) {
+      const s = useStore()
+
+      useEffect(() => { boot() }, [])
+
+      const run = s.runs.find((r) => r.id === s.selectedId) || null
+      const detail = s.selectedId ? s.details[s.selectedId] : null
+      const live = s.runs.find((r) => r.status === 'running') || null
+      const onSelect = useCallback((id) => select(id, false), [])
+      const onFollow = useCallback(() => {
+        const next = !snap.following
+        set({ following: next })
+        if (next) {
+          const target = live || s.runs[0]
+          if (target) select(target.id, true)
+        }
+      }, [live, s.runs])
+      const onJump = useCallback(() => { if (live) select(live.id, true) }, [live])
+
+      // 浮窗模式：只有「这次执行」一列（状态 / 进度 / 预览 / 产物）。
+      // 640px 里塞画布只会把两边都挤坏；要看图点右上角 ⤢ 去全屏工作台。
+      if (compact) {
+        return h('div', { className: 'cfl-root is-compact' },
+          h(Styles),
+          s.error ? h('div', { className: 'cfl-banner' }, h('b', null, '出错'), s.error) : null,
+          h('div', { className: 'cfl-main is-compact' },
+            h(Inspector, { run, detail })))
+      }
+
+      return h('div', { className: 'cfl-root' },
+        h(Styles),
+        h(TopBar, { s, live, onFollow, onJump }),
+        s.error ? h('div', { className: 'cfl-banner' }, h('b', null, '面板出错'), s.error) : null,
+        h(Workbench, { s },
+          s.tab === 'assets'
+            ? h(AssetsView, { s })
+            : s.tab === 'workflows'
+              ? h(WorkflowsView, { s, onBack: () => set({ wfPreview: null }) })
+              : h('div', { className: 'cfl-main' },
+                h(Timeline, { s, onSelect }),
+                h(GraphBoard, { run, detail }),
+                h(Inspector, { run, detail }))))
+    }
+
+    function PanelIcon(props) {
+      const size = (props && props.size) || 20
+      const active = !!(props && props.active)
+      return h('svg', {
+        width: size, height: size, viewBox: '0 0 24 24', fill: 'none',
+        stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round',
+        opacity: active ? 1 : 0.82, 'aria-hidden': true, style: { display: 'block' },
+      },
+      h('rect', { x: 2.5, y: 6.5, width: 7, height: 5, rx: 1.4 }),
+      h('rect', { x: 2.5, y: 14.5, width: 7, height: 5, rx: 1.4 }),
+      h('rect', { x: 14.5, y: 10, width: 7, height: 6, rx: 1.4 }),
+      h('path', { d: 'M9.5 9h2.4v4h2.6' }),
+      h('path', { d: 'M9.5 17h2.4v-4' }))
+    }
+
+    function ComfyPanelBoundary() {
+      const [err, setErr] = useState(null)
+      if (err) {
+        return h('div', { className: 'cfl-root' },
+          h('div', { className: 'cfl-banner' },
+            h('b', null, '面板渲染失败'),
+            String(err && err.message ? err.message : err)))
+      }
+      return h(ErrorCatcher, { onError: setErr }, h(Panel))
+    }
+
+    class ErrorCatcher extends React.Component {
+      constructor(props) { super(props); this.state = { err: null } }
+      static getDerivedStateFromError(err) { return { err } }
+      componentDidCatch(err) { this.props.onError && this.props.onError(err) }
+      render() { return this.state.err ? null : this.props.children }
+    }
+
+    // ─── 50-styles.js ──────────────────────────────────────────────────
+    // 50-styles.js — 全部样式集中在这里（方便整体换皮）。
+    // 字号只用三档：17（标题）/ 14（正文）/ 12.5（辅助）；间距 4 / 8 / 12 / 14 / 20。
+    // 颜色只从主题 token 取；彩色只用于「状态」，不拿去装饰。
+
+    function Styles() {
+      return h('style', null, `
+    .cfl-root{
+      position:relative;
+      --cfl-radius:12px;
+      --cfl-gap:14px;
+      --cfl-pad:14px;
+      --cfl-fs-title:17px;
+      --cfl-fs-body:14px;
+      --cfl-fs-meta:12.5px;
+      display:flex;
+      flex-direction:column;
+      height:100%;
+      min-height:560px;
+      overflow:hidden;
+      background:var(--dsw-alias-bg-base);
+      color:var(--dsw-alias-label-primary);
+      font-size:var(--cfl-fs-body);
+      line-height:1.55;
+      /* 面板是操作界面，不是文档：默认不许选字，否则拖动画布会拖出一片选区 */
+      user-select:none;
+      -webkit-user-select:none;
+    }
+    /* 只有真正要读的文本允许选中复制 */
+    .cfl-param p,.cfl-error p,.cfl-empty-hint{user-select:text;-webkit-user-select:text}
+
+    /* ── 顶栏 ───────────────────────────────────────────── */
+    .cfl-top{display:flex;align-items:center;gap:16px;padding:14px 18px;border-bottom:1px solid var(--dsw-alias-border-l1);flex:none}
+    .cfl-brand{display:flex;align-items:center;gap:10px;min-width:0}
+    .cfl-brand-title{font-size:var(--cfl-fs-title);font-weight:600;margin:0;letter-spacing:-.01em;white-space:nowrap}
+    .cfl-brand-url{font-size:var(--cfl-fs-meta);color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .cfl-conn{width:9px;height:9px;border-radius:50%;background:var(--dsw-alias-state-idle-primary);flex:none}
+    .cfl-conn.is-on{background:var(--dsw-alias-state-success-primary)}
+    .cfl-top-actions{margin-left:auto;display:flex;align-items:center;gap:8px}
+    .cfl-pill{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 11px;border-radius:99px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font-size:var(--cfl-fs-meta);white-space:nowrap}
+    .cfl-pill.is-run{color:var(--dsw-alias-brand-primary);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 12%,transparent)}
+    .cfl-pill.is-run i{width:7px;height:7px;border-radius:50%;background:currentColor;animation:cfl-pulse 1.3s ease-in-out infinite}
+    .cfl-btn{appearance:none;height:30px;padding:0 12px;border-radius:8px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font-size:var(--cfl-fs-meta);line-height:1;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;white-space:nowrap}
+    .cfl-btn:hover{border-color:var(--dsw-alias-border-l2)}
+    .cfl-btn.is-on{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
+    .cfl-btn:disabled{opacity:.45;cursor:default}
+    .cfl-btn.is-link{color:var(--dsw-alias-label-secondary)}
+    .cfl-btn.is-danger{margin-top:10px;border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 55%,var(--dsw-alias-border-l1));color:var(--dsw-alias-state-error-primary)}
+    .cfl-btn.is-danger:hover{border-color:var(--dsw-alias-state-error-primary)}
+
+    /* ── 三栏 ───────────────────────────────────────────── */
+    .cfl-main{flex:1;min-width:0;min-height:0;display:grid;grid-template-columns:300px minmax(0,1fr) 360px;gap:var(--cfl-gap);padding:var(--cfl-gap);overflow:hidden}
+    .cfl-col{min-height:0;display:flex;flex-direction:column;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);border-radius:var(--cfl-radius);overflow:hidden}
+    .cfl-col-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;padding:13px 14px 11px;border-bottom:1px solid var(--dsw-alias-border-l1);flex:none}
+    .cfl-col-head h2{font-size:var(--cfl-fs-body);font-weight:600;margin:0}
+    .cfl-col-head > span{font-size:var(--cfl-fs-meta);color:var(--dsw-alias-label-secondary);white-space:nowrap}
+    .cfl-col-body{flex:1;min-height:0;overflow:auto;padding:10px}
+    .cfl-col-canvas .cfl-col-body{padding:12px}
+    .cfl-col-foot{flex:none;padding:9px 14px 11px;border-top:1px solid var(--dsw-alias-border-l1)}
+    .cfl-col-inspector{background:transparent;border:0;border-radius:0;overflow:auto;padding-right:2px;gap:12px}
+
+    /* ── 卡片（右栏分块）────────────────────────────────── */
+    .cfl-card{background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);border-radius:var(--cfl-radius);overflow:hidden;flex:none}
+    .cfl-card-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;padding:13px 14px 9px}
+    .cfl-card-title{font-size:var(--cfl-fs-body);font-weight:600;margin:0}
+    .cfl-card-aside{font-size:var(--cfl-fs-meta);color:var(--dsw-alias-label-secondary)}
+    .cfl-card-body{padding:0 14px 14px}
+
+    /* ── 时间线 ─────────────────────────────────────────── */
+    .cfl-group{margin-bottom:6px}
+    .cfl-group-label{font-size:var(--cfl-fs-meta);color:var(--dsw-alias-label-secondary);padding:8px 8px 4px}
+    .cfl-run{display:flex;align-items:center;gap:10px;width:100%;padding:8px;border:1px solid transparent;border-radius:10px;background:transparent;color:inherit;text-align:left;cursor:pointer}
+    .cfl-run:hover{background:var(--dsw-alias-bg-layer-2)}
+    .cfl-run.is-active{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-border-l2)}
+    .cfl-run-text{display:flex;flex-direction:column;min-width:0;flex:1;gap:2px}
+    .cfl-run-label{font-size:var(--cfl-fs-body);line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+    .cfl-run-meta{font-size:var(--cfl-fs-meta);color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
+    .cfl-run-thumb{width:44px;height:44px;border-radius:8px;object-fit:cover;flex:none;background:var(--dsw-alias-bg-layer-2)}
+    .cfl-dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--dsw-alias-state-idle-primary)}
+    .cfl-dot.is-running{background:var(--dsw-alias-brand-primary);animation:cfl-pulse 1.3s ease-in-out infinite}
+    .cfl-dot.is-success{background:var(--dsw-alias-state-success-primary)}
+    .cfl-dot.is-error{background:var(--dsw-alias-state-error-primary)}
+    .cfl-dot.is-interrupted{background:var(--dsw-alias-state-warn-primary)}
+
+    /* ── 画布 / 节点 ────────────────────────────────────── */
+    .cfl-col-canvas .cfl-col-body{padding:12px;overflow:hidden;display:flex}
+    .cfl-canvas-wrap{position:relative;flex:1;min-width:0;min-height:0;overflow:hidden;border-radius:10px;background:var(--dsw-alias-bg-layer-2);background-image:radial-gradient(color-mix(in srgb,var(--dsw-alias-border-l2) 60%,transparent) 1px,transparent 1px);background-size:18px 18px;cursor:grab;touch-action:none}
+    .cfl-canvas-wrap:active{cursor:grabbing}
+    .cfl-canvas-stage{position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform}
+    .cfl-canvas-stage svg{display:block}
+    .cfl-canvas-hint{position:absolute;left:10px;bottom:9px;font-size:12px;color:var(--dsw-alias-label-secondary);background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 82%,transparent);padding:3px 9px;border-radius:6px;pointer-events:none}
+    .cfl-tools{display:flex;align-items:center;gap:6px}
+    .cfl-tools-meta{margin-right:4px}
+    .cfl-icon-btn{width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;border-radius:6px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);cursor:pointer;font-size:14px;line-height:1;padding:0}
+    .cfl-icon-btn:hover{border-color:var(--dsw-alias-border-l2)}
+    .cfl-icon-btn:disabled{opacity:.4;cursor:default}
+    .cfl-zoom-val{font-size:12px;color:var(--dsw-alias-label-secondary);min-width:40px;text-align:center;font-variant-numeric:tabular-nums}
+    .cfl-tool-btn{height:24px;padding:0 9px;border-radius:6px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-size:12px;cursor:pointer}
+    .cfl-tool-btn:hover{border-color:var(--dsw-alias-border-l2)}
+    .cfl-tool-btn:disabled{opacity:.4;cursor:default}
+    .cfl-node-box{fill:var(--dsw-alias-bg-layer-1);stroke:var(--dsw-alias-border-l2);stroke-width:1.2}
+    .cfl-node-title{fill:var(--dsw-alias-label-primary);font-size:13.5px;font-weight:600}
+    .cfl-node-sub{fill:var(--dsw-alias-label-secondary);font-size:12px;font-variant-numeric:tabular-nums}
+    .cfl-node-state{fill:var(--dsw-alias-state-idle-primary)}
+    .cfl-node.is-running .cfl-node-box{stroke:var(--dsw-alias-brand-primary);stroke-width:2.2;fill:color-mix(in srgb,var(--dsw-alias-brand-primary) 9%,var(--dsw-alias-bg-layer-1))}
+    .cfl-node.is-running .cfl-node-state{fill:var(--dsw-alias-brand-primary);animation:cfl-pulse 1.1s ease-in-out infinite}
+    .cfl-node.is-done .cfl-node-state{fill:var(--dsw-alias-state-success-primary)}
+    .cfl-node.is-done .cfl-node-box{stroke:color-mix(in srgb,var(--dsw-alias-state-success-primary) 45%,var(--dsw-alias-border-l2))}
+    .cfl-node.is-cached .cfl-node-box{stroke-dasharray:5 4}
+    .cfl-node.is-cached .cfl-node-state{fill:transparent;stroke:var(--dsw-alias-label-secondary);stroke-width:1.4}
+    .cfl-node.is-error .cfl-node-box{stroke:var(--dsw-alias-state-error-primary);stroke-width:2.2;fill:color-mix(in srgb,var(--dsw-alias-state-error-primary) 9%,var(--dsw-alias-bg-layer-1))}
+    .cfl-node.is-error .cfl-node-state{fill:var(--dsw-alias-state-error-primary)}
+    .cfl-edge{fill:none;stroke:var(--dsw-alias-border-l2);stroke-width:1.4;opacity:.8}
+    .cfl-edge.is-done{stroke:color-mix(in srgb,var(--dsw-alias-state-success-primary) 55%,var(--dsw-alias-border-l2));opacity:1}
+    .cfl-legend{display:flex;flex-wrap:wrap;gap:14px}
+    .cfl-legend-item{display:inline-flex;align-items:center;gap:6px;font-size:var(--cfl-fs-meta);color:var(--dsw-alias-label-secondary)}
+    .cfl-legend-item i{width:9px;height:9px;border-radius:3px;display:inline-block;background:var(--dsw-alias-state-idle-primary)}
+    .cfl-lg-run i{background:var(--dsw-alias-brand-primary)}
+    .cfl-lg-done i{background:var(--dsw-alias-state-success-primary)}
+    .cfl-lg-cache i{background:transparent;border:1.4px dashed var(--dsw-alias-label-secondary)}
+    .cfl-lg-error i{background:var(--dsw-alias-state-error-primary)}
+
+    /* ── 右栏内容 ───────────────────────────────────────── */
+    .cfl-kv{display:flex;flex-direction:column;gap:7px;margin:0}
+    .cfl-kv-row{display:grid;grid-template-columns:52px 1fr;gap:10px;align-items:baseline}
+    .cfl-kv dt{font-size:var(--cfl-fs-meta);color:var(--dsw-alias-label-secondary)}
+    .cfl-kv dd{margin:0;font-size:var(--cfl-fs-body);font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .cfl-progress-wrap{margin-top:12px}
+    .cfl-progress{height:6px;border-radius:99px;background:var(--dsw-alias-bg-layer-2);overflow:hidden}
+    .cfl-progress i{display:block;height:100%;border-radius:99px;background:var(--dsw-alias-brand-primary);transition:width .3s ease}
+    .cfl-progress.is-indeterminate i{animation:cfl-slide 1.3s ease-in-out infinite}
+    .cfl-progress-meta{display:flex;justify-content:space-between;font-size:var(--cfl-fs-meta);color:var(--dsw-alias-label-secondary);margin-top:6px;font-variant-numeric:tabular-nums}
+    .cfl-preview-media{display:block;width:100%;max-height:300px;object-fit:contain;border-radius:10px;background:var(--dsw-alias-bg-layer-2)}
+    .cfl-preview-blank{display:flex;align-items:center;justify-content:center;height:150px;border-radius:10px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font-size:var(--cfl-fs-meta)}
+    .cfl-thumbs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+    .cfl-thumb{display:block;position:relative;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;overflow:hidden;aspect-ratio:1/1;background:var(--dsw-alias-bg-layer-2)}
+    .cfl-thumb:hover{border-color:var(--dsw-alias-border-l2)}
+    .cfl-thumb-media{width:100%;height:100%;object-fit:cover;display:block}
+    .cfl-audio-badge{display:flex;align-items:center;justify-content:center;height:100%;font-size:var(--cfl-fs-meta);color:var(--dsw-alias-label-secondary)}
+    .cfl-params{display:flex;flex-direction:column;gap:10px}
+    .cfl-param{display:grid;grid-template-columns:52px 1fr;gap:10px;align-items:start}
+    .cfl-param span{font-size:var(--cfl-fs-meta);color:var(--dsw-alias-label-secondary);padding-top:1px}
+    .cfl-param p{margin:0;font-size:var(--cfl-fs-body);line-height:1.6;word-break:break-word}
+
+    /* ── 状态块 ─────────────────────────────────────────── */
+    .cfl-empty{padding:26px 10px;text-align:center}
+    .cfl-empty-title{font-size:var(--cfl-fs-body);font-weight:600;margin:0 0 4px}
+    .cfl-empty-hint{font-size:var(--cfl-fs-meta);color:var(--dsw-alias-label-secondary);margin:0;line-height:1.6}
+    .cfl-error{margin-top:12px;padding:10px 12px;border-radius:10px;border:1px solid var(--dsw-alias-state-error-primary);background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 7%,transparent)}
+    .cfl-error b{display:block;font-size:var(--cfl-fs-meta);color:var(--dsw-alias-state-error-primary);margin-bottom:3px}
+    .cfl-error p{margin:0;font-size:var(--cfl-fs-meta);line-height:1.6;word-break:break-word}
+    .cfl-banner{margin:0 14px 12px;padding:10px 12px;border-radius:10px;border:1px solid var(--dsw-alias-state-error-primary);font-size:var(--cfl-fs-meta)}
+    .cfl-banner b{margin-right:6px;color:var(--dsw-alias-state-error-primary)}
+
+    /* ── 工作台外壳：左导航 + 内容区 ─────────────────────── */
+    .cfl-shell{flex:1;min-height:0;display:flex;overflow:hidden}
+    .cfl-rail{width:176px;flex:none;display:flex;flex-direction:column;gap:2px;padding:14px 10px;border-right:1px solid var(--dsw-alias-border-l1)}
+    .cfl-rail-title{font-size:11.5px;letter-spacing:.04em;color:var(--dsw-alias-label-secondary);padding:2px 10px 10px}
+    .cfl-rail-item{display:flex;align-items:center;gap:10px;padding:9px 10px;border:0;border-radius:8px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;font-size:13.5px;text-align:left}
+    .cfl-rail-item:hover{background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary)}
+    .cfl-rail-item.is-active{background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-brand-primary);box-shadow:inset 2px 0 0 var(--dsw-alias-brand-primary)}
+    .cfl-rail-item span{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .cfl-rail-item em{font-style:normal;font-size:11.5px;line-height:1.2;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
+    .cfl-w-content{flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;padding:14px;overflow:hidden}
+    .cfl-w-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex:none;margin-bottom:12px}
+    .cfl-w-title{font-size:16px;font-weight:600;margin:0 0 2px}
+    .cfl-w-sub{font-size:12.5px;color:var(--dsw-alias-label-secondary);margin:0}
+    .cfl-w-actions{display:flex;align-items:center;gap:8px}
+    .cfl-chips{display:flex;gap:6px}
+    .cfl-chip{height:26px;padding:0 10px;border-radius:99px;border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-secondary);font-size:12.5px;cursor:pointer;white-space:nowrap}
+    .cfl-chip.is-on{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l2)}
+    .cfl-grid-wrap{flex:1;min-height:0;overflow:auto}
+    .cfl-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(172px,1fr));gap:12px;align-content:start;padding-bottom:4px}
+    .cfl-tile{position:relative;padding:0;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;overflow:hidden;background:var(--dsw-alias-bg-layer-1);cursor:pointer;text-align:left;display:block;width:100%}
+    .cfl-tile:hover{border-color:var(--dsw-alias-border-l2)}
+    .cfl-tile-frame{position:relative;display:block;width:100%;aspect-ratio:1/1;overflow:hidden;background:var(--dsw-alias-bg-layer-2)}
+    .cfl-tile-media{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+    .cfl-tile-badge{position:absolute;top:6px;left:6px;font-size:11px;padding:1px 6px;border-radius:6px;background:rgba(0,0,0,.55);color:#fff}
+    .cfl-tile-meta{position:absolute;left:0;right:0;bottom:0;display:flex;flex-direction:column;gap:1px;padding:20px 8px 6px;background:linear-gradient(to top,rgba(0,0,0,.72),rgba(0,0,0,0))}
+    .cfl-tile-name{font-size:12px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .cfl-tile-sub{font-size:11px;color:rgba(255,255,255,.78);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .cfl-more{display:flex;justify-content:center;padding:14px 0 6px}
+    .cfl-lightbox{position:absolute;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:20}
+    .cfl-lightbox-body{width:min(78%,900px);max-height:86%;display:flex;flex-direction:column;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:12px;overflow:hidden}
+    .cfl-lightbox-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);font-size:12.5px}
+    .cfl-lightbox-media{width:100%;max-height:62vh;object-fit:contain;background:#000}
+    .cfl-lightbox-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;border-top:1px solid var(--dsw-alias-border-l1)}
+    .cfl-w-empty{flex:1;display:flex;align-items:center;justify-content:center;color:var(--dsw-alias-label-secondary);font-size:13px}
+    .cfl-w-canvas{flex:1;min-height:0;display:flex}
+    .cfl-w-canvas > .cfl-col{flex:1}
+    .cfl-rows{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:6px}
+    .cfl-row{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-1);color:inherit;cursor:pointer;text-align:left}
+    .cfl-row:hover{border-color:var(--dsw-alias-border-l2)}
+    .cfl-row-main{display:flex;flex-direction:column;min-width:0;flex:1}
+    .cfl-row-title{font-size:14px}
+    .cfl-row-sub{font-size:12px;color:var(--dsw-alias-label-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .cfl-row-tag{font-size:11.5px;color:var(--dsw-alias-label-secondary);border:1px solid var(--dsw-alias-border-l1);border-radius:6px;padding:1px 6px;white-space:nowrap}
+    .cfl-row-time{font-size:11.5px;color:var(--dsw-alias-label-secondary);white-space:nowrap}
+
+    /* ── 右侧停靠栏（不是悬浮卡片：贴窗口右缘、直角、只有一条左边线）── */
+    .cfl-float{position:fixed;right:0;top:38px;bottom:0;z-index:40;pointer-events:auto;display:flex;flex-direction:column;background:var(--dsw-alias-bg-base);border-left:1px solid var(--dsw-alias-border-l1);box-shadow:none;border-radius:0;overflow:hidden}
+    .cfl-float-bar{display:flex;align-items:center;gap:8px;height:44px;padding:0 12px;border-bottom:1px solid var(--dsw-alias-border-l1);flex:none;background:var(--dsw-alias-bg-base)}
+    .cfl-float-title{font-size:13px;font-weight:600;white-space:nowrap}
+    .cfl-float-meta{font-size:12px;color:var(--dsw-alias-label-secondary);margin-left:auto;margin-right:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .cfl-float-body{flex:1;min-height:0;overflow:hidden;display:flex}
+    .cfl-float-body > .cfl-root{flex:1}
+    .cfl-float-grip{position:absolute;left:0;top:0;bottom:0;width:5px;cursor:ew-resize}
+    .cfl-float-grip:hover{background:var(--dsw-alias-border-l2)}
+    .cfl-root.is-compact{min-height:0}
+    .cfl-main.is-compact{display:flex;flex-direction:column;padding:0;gap:0;overflow:hidden}
+    .cfl-main.is-compact .cfl-col-inspector{padding-right:0;gap:0}
+    /* 停靠栏里不要"卡片套卡片"：改成原生侧栏那种分隔线 + 通栏内容 */
+    .cfl-float .cfl-card{border:0;border-radius:0;background:transparent}
+    .cfl-float .cfl-card + .cfl-card{border-top:1px solid var(--dsw-alias-border-l1)}
+    .cfl-float .cfl-card-head{padding:12px 14px 8px}
+    .cfl-float .cfl-card-body{padding:0 14px 14px}
+    .cfl-float .cfl-preview-media{width:100%;max-height:38vh;border-radius:0;object-fit:contain;background:var(--dsw-alias-bg-layer-2);display:block}
+    .cfl-float .cfl-preview-blank{border-radius:0;height:180px}
+    .cfl-float .cfl-thumbs{gap:6px}
+
+    @keyframes cfl-pulse{0%,100%{opacity:1}50%{opacity:.35}}
+    @keyframes cfl-slide{0%{transform:translateX(-10%)}50%{transform:translateX(160%)}100%{transform:translateX(-10%)}}
+
+    @media (max-width:1180px){
+      .cfl-main{grid-template-columns:264px minmax(0,1fr) 320px}
+    }
+    @media (max-width:960px){
+      .cfl-main{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto auto;overflow:auto}
+      .cfl-col-timeline{max-height:260px}
+      .cfl-col-canvas{min-height:320px}
+      .cfl-col-inspector{overflow:visible}
+    }
+    ` )
+    }
+
+    // ─── 60-apply.js ───────────────────────────────────────────────────
+    // 60-apply.js — 注册到 DSH：侧栏入口、主面板、右下角备用入口、自动切面板。
+
+    function apply(ctx) {
+      // 侧栏入口（和主面板同一个 id，DSH 用 id 把两者连起来）
+      ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
+        name: 'sidebar.panellist',
+        id: PANEL_ID,
+        order: 30,
+        label: 'Comfy 工作台',
+      }, PanelIcon))
+
+      // 主面板
+      ctx.slots.inject('main', () => ctx.slots.register({
+        name: 'main',
+        key: PANEL_ID,
+      }, ComfyPanelBoundary))
+
+      // 右侧浮窗：聊天区不动，进度挂在右边（这是主用法）
+      try {
+        const FloatPanel = makeFloatPanel(ctx)
+        ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+          name: 'shell.overlay',
+          id: 'comfy-live-float',
+          order: 55,
+          label: 'Comfy 工作台浮窗',
+        }, FloatPanel))
+      } catch { /* 没有 shell.overlay 也不影响主面板 */ }
+
+      // 只启动数据流，不再自动切到主面板。
+      // 主面板会替换对话区（用户明确不要）；新任务出现时由浮窗自己弹出来。
+      try {
+        boot()
+      } catch { /* 数据流起不来也不影响手动点开 */ }
+    }
+
+
+    return { inject: ['slots', 'layout'], apply }
+  },
+})

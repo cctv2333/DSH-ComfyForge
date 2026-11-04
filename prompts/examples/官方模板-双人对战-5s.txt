@@ -1,0 +1,40 @@
+资产角色：
+<Picture 1>
+国风动漫少女，深棕色发髻点缀红梅与蝶形发饰，身穿白金红相间的抹胸上衣与飘逸薄纱灯笼裤，周身环绕金红流光与炽炎花瓣特效。
+<Picture 2>
+硬派白发战将，身穿暗红色皮革长款风衣、黑色内衬与战术皮裤，手持重剑与双枪，周身散发冷冽红黑魔力气浪。
+
+一个低机位推近镜头框住
+<Picture 1>
+与
+<Picture 2>
+在废墟长廊两端对峙。
+<Picture 1>
+率先启动超音速贴地冲刺，足尖踏出金红烈焰莲华，甩出赤红绫缎如游龙贯空；
+the camera cuts to
+侧面跟摇特写，
+<Picture 2>
+拔出重剑横向重劈，刀锋与炽炎绫缎剧烈碰撞，火星与雷光四向迸射，气浪撕裂地面石板。
+the shot transitions to
+俯冲环绕镜头，
+<Picture 1>
+借力凌空翻腾，双掌结印召唤暴雨般金红火蝶与符文剑气垂直轰炸；
+<Picture 2>
+单手举剑格挡，魔力红光护盾展开，随即甩动红风衣滑步侧移，拔枪极速连射，火舌与剑气在半空接连引爆。
+the camera dynamically follows
+贴地高速滑移，
+<Picture 1>
+在弹雨残影中多维瞬闪，瞬身突进至
+<Picture 2>
+身前旋身横扫，赤焰气刃斩开风衣下摆；
+the shot changes to
+极速下坠定点特写，
+<Picture 2>
+反手抽刀上挑震开攻击，
+<Picture 1>
+空中旋身单手撑地滑退数米，
+<Picture 1>
+与
+<Picture 2>
+同时稳住身形横刃相对，周身烈火与魔能疯狂暴涨，在最强杀意临界点定格。
+overall_soundscape: Explosive shockwaves crack the stone ground as steel clashes with fiery energy ribbons. Gunfire roars in rapid bursts followed by the sizzling hum of burning petals and swirling demonic aura.non_diegetic_music: High-octane heavy metal hybrid with aggressive electric guitar riffs, pounding industrial drums, and intense symphonic brass, cutting off sharply on the final clash.

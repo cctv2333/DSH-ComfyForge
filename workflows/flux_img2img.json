@@ -1,0 +1,46 @@
+{
+  "name": "flux_img2img",
+  "version": 1,
+  "title": "FLUX 图生图 /  refine（低 denoise 保结构）",
+  "description": "把一张已有图作为起点重采样。denoise 0.25-0.45 = 保结构微调（细节、质感、光线）；0.5-0.7 = 半重绘。用于对满意的构图做精修，而不是重新抽卡。",
+  "model": "flux1-dev-Q4_K_S.gguf",
+  "bindings": {
+    "image": ["7", "image"],
+    "prompt": ["4", "text"],
+    "negative": ["6", "text"],
+    "denoise": ["9", "denoise"],
+    "steps": ["9", "steps"],
+    "seed": ["9", "seed"],
+    "guidance": ["5", "guidance"],
+    "filename_prefix": ["11", "filename_prefix"]
+  },
+  "randomize": ["seed"],
+  "defaults": {
+    "image": "",
+    "prompt": "",
+    "negative": "",
+    "denoise": 0.4,
+    "steps": 24,
+    "guidance": 3.5,
+    "filename_prefix": "comfyforge/img2img"
+  },
+  "workflow": {
+    "1": { "class_type": "UnetLoaderGGUF", "inputs": { "unet_name": "flux1-dev-Q4_K_S.gguf" } },
+    "2": { "class_type": "DualCLIPLoader", "inputs": { "clip_name1": "clip_l.safetensors", "clip_name2": "t5xxl_fp16.safetensors", "type": "flux" } },
+    "3": { "class_type": "VAELoader", "inputs": { "vae_name": "flux-ae.safetensors" } },
+    "4": { "class_type": "CLIPTextEncode", "inputs": { "clip": ["2", 0], "text": "" } },
+    "5": { "class_type": "FluxGuidance", "inputs": { "conditioning": ["4", 0], "guidance": 3.5 } },
+    "6": { "class_type": "CLIPTextEncode", "inputs": { "clip": ["2", 0], "text": "" } },
+    "7": { "class_type": "LoadImage", "inputs": { "image": "" } },
+    "8": { "class_type": "VAEEncode", "inputs": { "pixels": ["7", 0], "vae": ["3", 0] } },
+    "9": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": ["1", 0], "positive": ["5", 0], "negative": ["6", 0], "latent_image": ["8", 0],
+        "seed": 42, "steps": 24, "cfg": 1.0, "sampler_name": "euler", "scheduler": "simple", "denoise": 0.4
+      }
+    },
+    "10": { "class_type": "VAEDecode", "inputs": { "samples": ["9", 0], "vae": ["3", 0] } },
+    "11": { "class_type": "SaveImage", "inputs": { "images": ["10", 0], "filename_prefix": "comfyforge/img2img" } }
+  }
+}

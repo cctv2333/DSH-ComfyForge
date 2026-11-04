@@ -1,0 +1,190 @@
+{
+  "name": "anime_scene",
+  "version": 2,
+  "title": "日式漫画场景（黄昏雨夜 · 售货机 · 便利店 · C-130）",
+  "description": "在 flux_t2i 图上预设「日式漫画」提示词与参数：线稿 + 平涂 + 网点；1024x1024，20 步。改 prompt 即可复用。",
+  "model": "flux1-dev-Q4_K_S.gguf",
+  "native_mp": 1,
+  "recommended_sizes": [
+    {
+      "name": "square",
+      "width": 1024,
+      "height": 1024,
+      "note": "原生 1MP，首选"
+    },
+    {
+      "name": "landscape_16_9",
+      "width": 1344,
+      "height": 768,
+      "note": "约 1.03MP"
+    },
+    {
+      "name": "portrait_9_16",
+      "width": 768,
+      "height": 1344,
+      "note": "约 1.03MP"
+    },
+    {
+      "name": "landscape_4_3",
+      "width": 1152,
+      "height": 896,
+      "note": "约 1.03MP"
+    }
+  ],
+  "bindings": {
+    "prompt": [
+      "4",
+      "text"
+    ],
+    "negative": [
+      "6",
+      "text"
+    ],
+    "width": [
+      "7",
+      "width"
+    ],
+    "height": [
+      "7",
+      "height"
+    ],
+    "steps": [
+      "8",
+      "steps"
+    ],
+    "seed": [
+      "8",
+      "seed"
+    ],
+    "guidance": [
+      "5",
+      "guidance"
+    ],
+    "filename_prefix": [
+      "10",
+      "filename_prefix"
+    ]
+  },
+  "randomize": [
+    "seed"
+  ],
+  "defaults": {
+    "prompt": "Japanese manga illustration, bold black ink line art, cel shading, flat colors, screentone texture, a cute anime girl in sailor uniform at a vending machine, 7-Eleven store with green orange red striped sign, rainy Japanese street at dusk, power lines, a C-130 Hercules four-engine turboprop military plane flying low overhead, dramatic low angle composition, comic panel energy",
+    "negative": "",
+    "width": 1024,
+    "height": 1024,
+    "steps": 20,
+    "guidance": 3.5,
+    "filename_prefix": "comfyforge/anime"
+  },
+  "workflow": {
+    "1": {
+      "class_type": "UnetLoaderGGUF",
+      "inputs": {
+        "unet_name": "flux1-dev-Q4_K_S.gguf"
+      }
+    },
+    "2": {
+      "class_type": "DualCLIPLoader",
+      "inputs": {
+        "clip_name1": "clip_l.safetensors",
+        "clip_name2": "t5xxl_fp16.safetensors",
+        "type": "flux"
+      }
+    },
+    "3": {
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "flux-ae.safetensors"
+      }
+    },
+    "4": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "2",
+          0
+        ],
+        "text": ""
+      }
+    },
+    "5": {
+      "class_type": "FluxGuidance",
+      "inputs": {
+        "conditioning": [
+          "4",
+          0
+        ],
+        "guidance": 3.5
+      }
+    },
+    "6": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "2",
+          0
+        ],
+        "text": ""
+      }
+    },
+    "7": {
+      "class_type": "EmptySD3LatentImage",
+      "inputs": {
+        "width": 1024,
+        "height": 1024,
+        "batch_size": 1
+      }
+    },
+    "8": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "positive": [
+          "5",
+          0
+        ],
+        "negative": [
+          "6",
+          0
+        ],
+        "latent_image": [
+          "7",
+          0
+        ],
+        "seed": 42,
+        "steps": 20,
+        "cfg": 1,
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "denoise": 1
+      }
+    },
+    "9": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "8",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
+      }
+    },
+    "10": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": [
+          "9",
+          0
+        ],
+        "filename_prefix": "comfyforge/flux"
+      }
+    }
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "name": "dsh-comfyforge",
+  "version": "0.3.0",
+  "description": "把本机 ComfyUI 变成 agent 能看见产出、能自检、能按证据改的工具链：MCP 服务 + 客观质检 + 执行实时面板。不含模型权重。",
+  "type": "module",
+  "license": "MIT",
+  "author": "cctv2333",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cctv2333/DSH-ComfyForge.git"
+  },
+  "keywords": [
+    "comfyui",
+    "mcp",
+    "model-context-protocol",
+    "agent",
+    "text-to-image",
+    "text-to-video",
+    "ffmpeg"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "mcp/server.mjs",
+  "scripts": {
+    "doctor": "node mcp/doctor.mjs",
+    "preflight": "node tools/preflight.mjs",
+    "dashboard": "node ui/server.mjs",
+    "shots": "node tools/shots.mjs",
+    "storyboard": "node tools/storyboard.mjs",
+    "check-workflow": "node tools/check-workflow.mjs",
+    "prompt-lint": "node tools/prompt-lint.mjs"
+  },
+  "files": [
+    "mcp/",
+    "workflows/",
+    "ui/",
+    "tools/",
+    "dsh-plugin/",
+    "docs/",
+    "prompts/",
+    "comfyforge.config.example.json",
+    "README.md",
+    "LICENSE"
+  ]
+}

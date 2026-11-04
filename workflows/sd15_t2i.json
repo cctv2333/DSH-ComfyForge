@@ -1,0 +1,51 @@
+{
+  "name": "sd15_t2i",
+  "version": 1,
+  "title": "SD1.5 动漫 文生图（512 原生 · 小参数量路线）",
+  "description": "SD1.5 系动漫 checkpoint 的通用文生图。原生 512，竖图 512x768 最稳；cfg 7 左右，必须写负面提示词。适合小模型/低显存快速试构图，细节和长提示词理解不如 FLUX。",
+  "model": "hassakuHentaiModel_v13.safetensors",
+  "family": "sd15",
+  "native_mp": 0.39,
+  "recommended_sizes": [
+    { "name": "portrait", "width": 512, "height": 768, "note": "竖图，人物立绘最常用" },
+    { "name": "square", "width": 512, "height": 512, "note": "原生方形" },
+    { "name": "landscape", "width": 768, "height": 512, "note": "横图；再大 SD1.5 容易出多头多手" },
+    { "name": "large_portrait", "width": 576, "height": 896, "note": "接近上限，画质开始不稳" }
+  ],
+  "bindings": {
+    "prompt": ["3", "text"],
+    "negative": ["4", "text"],
+    "width": ["5", "width"],
+    "height": ["5", "height"],
+    "steps": ["6", "steps"],
+    "cfg": ["6", "cfg"],
+    "seed": ["6", "seed"],
+    "filename_prefix": ["8", "filename_prefix"]
+  },
+  "randomize": ["seed"],
+  "defaults": {
+    "prompt": "1girl, solo, sailor uniform, seifuku, short hair, standing at a vending machine, japanese street, night, rain, convenience store, city lights, wet street, looking at viewer, masterpiece, best quality, detailed background",
+    "negative": "lowres, bad anatomy, bad hands, extra fingers, worst quality, low quality, jpeg artifacts, text, watermark, signature, blurry",
+    "width": 512,
+    "height": 768,
+    "steps": 28,
+    "cfg": 7,
+    "filename_prefix": "comfyforge/sd15"
+  },
+  "workflow": {
+    "1": { "class_type": "CheckpointLoaderSimple", "inputs": { "ckpt_name": "hassakuHentaiModel_v13.safetensors" } },
+    "2": { "class_type": "CLIPSetLastLayer", "inputs": { "clip": ["1", 1], "stop_at_clip_layer": -2 } },
+    "3": { "class_type": "CLIPTextEncode", "inputs": { "clip": ["2", 0], "text": "" } },
+    "4": { "class_type": "CLIPTextEncode", "inputs": { "clip": ["2", 0], "text": "" } },
+    "5": { "class_type": "EmptyLatentImage", "inputs": { "width": 512, "height": 768, "batch_size": 1 } },
+    "6": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": ["1", 0], "positive": ["3", 0], "negative": ["4", 0], "latent_image": ["5", 0],
+        "seed": 42, "steps": 28, "cfg": 7, "sampler_name": "dpmpp_2m", "scheduler": "karras", "denoise": 1.0
+      }
+    },
+    "7": { "class_type": "VAEDecode", "inputs": { "samples": ["6", 0], "vae": ["1", 2] } },
+    "8": { "class_type": "SaveImage", "inputs": { "images": ["7", 0], "filename_prefix": "comfyforge/sd15" } }
+  }
+}

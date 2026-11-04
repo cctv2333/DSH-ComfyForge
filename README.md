@@ -1,0 +1,269 @@
+# ComfyForge
+
+**版本 `0.3.0`** · MIT · <https://github.com/cctv2333/DSH-ComfyForge>
+
+把本机 ComfyUI 变成 **agent 能看见自己产出、能自检、能按证据改** 的工具链：
+32 个 MCP 工具 + 一套客观质检 + 一个执行实时面板 + 一组零依赖的 CLI 工具。
+
+它不是「一键出图」软件。核心是这条闭环：
+
+```
+生成 → 客观指标（分辨率/锐度/裁切/对比）→ 一次看多张（联络表）→ 按证据改参数 → 再跑
+```
+
+---
+
+## 做出来过什么（五个最有代表性的结果）
+
+以下都是**本机实测**的数字，不是设计目标。出于素材版权与隐私，仓库内不放图；
+每条都写清「做了什么 / 拿什么证明 / 硬约束在哪」。
+
+### 1. 执行实时面板：把「跑完才知道」变成「跑的时候就能看见」
+
+ComfyUI 只把 `execution_*` 事件发给**提交者的 client_id**，所以任何旁听式看板都拿不到节点级进度，
+只能读 `/history`（事后）。这里的做法是**让面板自己成为提交者**：面板带自己的 client_id 提交，
+ComfyUI 发给它的事件正好落到它手里。
+
+- 效果：节点图按真实 API 图逐个点亮（灰=未跑、虚线=命中缓存、蓝=在跑、绿=完成、红=失败）、进度计数、**实时预览帧**、产物缩略图；
+- 顺手解决两件长期痛点：每次执行自动把 API 图转成 UI 格式写进 `ComfyUI/user/default/workflows/`（在 ComfyUI 里可打开可重跑），
+  以及执行记录落盘 `runs/live/<prompt_id>.json`；
+- 调试过的一个真 bug：同一 sid 出现两条连接时后一条会顶掉前一条，任意一条断开又会把 sid 整个 pop 掉 →
+  表现为「面板开着但永远只有事后记录」。修法是连接带代数、提交前 `ensure()`、3 秒没等到 `execution_start` 主动重连。
+
+### 2. 视频二采配方：8GB 显存出 1216×704 带原生音轨
+
+一采 608×352 打底 → 学习型 3D latent 放大 ×2 → 分块低噪声重采样（chunk 153 / overlap 17 / anchor 0.99）。
+
+| 项 | 实测值 |
+|---|---|
+| 输出 | 1216×704 · 24fps · 带同步音轨 |
+| 15.08 秒（362 帧 = `5+17×21`） | 二采全流程约 **812–830 秒** GPU |
+| 5 秒 | 约 **285–325 秒** |
+| 与「一采 lanczos 直接放大」比 | lap_var 51.5 → **234.6**（4.5×），hf_ratio 0.0086 → **0.0193** |
+
+硬约束：`length` 必须是 `5+17k`；宽高必须是 32 的倍数；把 σ≈0.6 的半成品 latent 直接喂给放大网络会出彩色碎片。
+
+### 3. 提示词结构的 A/B 实证：分镜是「写」出来的，不是「剪」出来的
+
+同模型、同参考图、同 seed、全部采样参数不动，**只改提示词结构**：
+
+| | A：六段式 + 6 个 `[Shot]` 时间码 | B：一段式短描述 |
+|---|---|---|
+| 提示词 | 5923 字符 | 783 字符 |
+| 实际镜头数 | **6** | **1** |
+| 强切点 | 6 个（3.67 / 5.25 / 6.58 / 9.04 / 13.58s） | **0** |
+| 结果 | 有转场、有景别推进、动作有因果 | 退化成固定机位一件事，且跳过中间过程 |
+
+结论：**镜头数、景别跨度、声音同步都写在提示词里**；后期切分只能复核，不能创造。
+
+### 4. 自动分镜切分与复核（零依赖，只要 ffmpeg）
+
+`node tools/shots.mjs <video> --out <dir>`：场景检测 → 合并密集切点（间隔 <`--min` 视为同一镜头内的高频变化）→ 切出每个镜头 + 首帧联络图 + `shots.json`。
+
+实测 15.08 秒 / 6 镜的片子：原始切点 8 个 → 合并 5 个 → 切出 6 段；切点与提示词时间码偏差 **0.3–1.2 秒**。
+这正是「提示词写的时间码」和「模型真正切的位置」之间的可核对关系。
+
+### 5. 能力三态判定：缺什么就说缺什么，不说假话
+
+`node tools/preflight.mjs` 把 8 项能力拆成三层依赖（零依赖 / ComfyUI 节点与节点包 / 模型权重），
+每项只给三种状态：**ok / unknown / missing**。
+
+- ComfyUI 没连上时，它说「不知道」，**不会假装通过**；
+- 每项缺件都给出「是什么、多大、放哪个目录」；
+- 每项都写了 `minimal`（最低门槛）与 `degrade`（缺了怎么降级）；
+- **工具永不自动下载任何东西**——它只负责让你判断「补它值不值」。
+
+---
+
+## ⚠ 使用前必读（Critical Context）
+
+**这不是开箱即用的发行包。** 仓库里只有 MCP 服务、工作流 JSON、脚本和文档，
+**不含** ComfyUI、**不含**任何模型权重、**不含** Python。缺了下面任何一项，
+工具能启动，但提交必然失败——这不是 bug，是缺依赖。
+
+### 1. 外部依赖（缺了会怎样）
+
+| 依赖 | 必需 | 体积（参考） | 缺了的表现 |
+|---|---|---|---|
+| ComfyUI（任意发行版） | 是 | ~1GB | `comfy_health` 报连不上；所有生成类工具失败 |
+| 出图模型（见下「模板需要什么」） | 是 | 8–20GB | 提交时 `node_errors` 报模型文件不存在 |
+| Python + Pillow + numpy | 是 | ~100MB | 图像指标/拼图/蒙版全废（`node mcp/doctor.mjs` 会标 fail） |
+| Node.js ≥ 18 | 是 | — | 根本起不来（需要内置 `fetch` 与 `AbortSignal.timeout`） |
+| ComfyUI-GGUF 自定义节点 | 模板需要 | 小 | 模板里的 `UnetLoaderGGUF` 节点不存在 → 提交被拒 |
+| comfyui_controlnet_aux | 可选 | 小 | 只有全局重构/控制网相关工具不可用 |
+| ControlNet Union Pro（FLUX） | 可选 | 4GB | `comfy_restructure` / 参考图控制不可用 |
+
+### 2. 哪些东西是「机器相关」的（都可在配置里改，代码里没有硬编码）
+
+MCP 服务启动时会按 **环境变量 → `comfyforge.config.json` → 自动探测** 的顺序解析这些值，
+并把每个值的来源写进 `comfy_health` 的返回里，所以「它为什么在我这儿不对」有据可查。
+
+- `comfyUrl`：ComfyUI 地址，默认 `http://127.0.0.1:8188`
+- `comfyRoot`：ComfyUI 安装目录（含 `main.py` 的那层）。**可以不填**——不填就是 remote 模式：
+  产物改走 HTTP `/view` 下载，代价是读不到 `comfyui.log`、也没有本地原图的捷径
+- `outputDir` / `logPath`：默认由 `comfyRoot` 推出
+- `python`：默认自动挑（优先 ComfyUI 便携包自带的 `python/python.exe`，它通常已装好 Pillow）
+
+自动探测只在「名字里带 comfy」的目录上做**有界扫描**（深度 ≤3、目录数 ≤2500），
+不会全盘递归；想关掉就写 `{"autoDetect": false}`。
+
+### 3. 能力边界（我在这台机器上实测过的硬约束）
+
+| 边界 | 事实 |
+|---|---|
+| 显存 | 8GB（RTX 5060 Ti）下 **一次只跑一张**；连发会显存碎片化卡死，需重启 ComfyUI |
+| 分辨率 | FLUX.1-dev Q4 原生 ~1MP。1024×1024 正常，768 以下细节明显崩 |
+| 文字 | **不会写字**。招牌/店招上的拉丁字母会变成 `GXIEE`、`7ATC` 这类乱码；汉字完全没有 |
+| 具体机型 | C-130 这类「有明确轮廓的实物」靠提示词画不准，必须给参考图 + ControlNet |
+| 局部编辑 | 能只改指定区域，但**新放进去的物体光照常与场景不匹配**（BUG-0010，open） |
+| 长任务 | MCP 客户端单次调用约 60s 超时。所有等待工具都切成「等一小段 + `pending` 接力」，别把 `wait_s` 设 >55 |
+
+### 4. 副作用与安全
+
+- 会在仓库里写 `runs/`、`.cache/`、`picks.json`，在 ComfyUI 里写 `output/`、`input/`。
+- `comfy_triage` 会**移动**文件到 `output/_trash/<时间戳>/` 并写 `manifest.json`，**不删除**，可 restore。
+- 看板只监听 `127.0.0.1`，**没有鉴权**，不要挂到公网或 0.0.0.0。
+- 部分工具会把图压成 JPEG 内联回传（控制上下文预算），原图始终在磁盘上。
+
+---
+
+## 60 秒接入
+
+```powershell
+# 1) 先确认环境（不连 MCP 也能跑，缺什么直接告诉你修法）
+cd <仓库目录>
+node mcp/doctor.mjs
+
+# 2) 全 OK 后，挂到 MCP 客户端（以 DSH 为例，配置片段见下）
+# 3) 让 agent 先调 comfy_health，它会把上面那份自检再报一遍
+```
+
+DSH 挂载（`～/.dsh/profiles/<profile>/cordis.patch.yml`，改完**重启 DSH** 才生效）：
+
+```yaml
+- insert:
+    - id: mcp-comfyforge
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: comfy
+        transport: stdio
+        command: node            # 写成 node.exe 的绝对路径更稳
+        args:
+          - <仓库目录>/mcp/server.mjs
+        env:
+          COMFY_URL: http://127.0.0.1:8188
+```
+
+Claude Desktop / 其他 MCP 客户端同理：stdio，命令 `node`，参数 `mcp/server.mjs`。
+
+> DSH 常驻 MCP 进程**不会热重载**：改 `mcp/` 下的代码后要重启 DSH；`workflows/*.json` 每次调用重读，改完即时生效。
+
+## 配置
+
+复制 `comfyforge.config.example.json` 为 `comfyforge.config.json` 再改（这个文件在 `.gitignore` 里）。
+
+| 字段 | 环境变量 | 默认 | 说明 |
+|---|---|---|---|
+| `comfyUrl` | `COMFY_URL` | `http://127.0.0.1:8188` | ComfyUI 地址 |
+| `comfyRoot` | `COMFY_ROOT` | 自动探测 | 含 `main.py` 的目录；不填=remote 模式 |
+| `outputDir` | `COMFY_OUTPUT_DIR` | `<comfyRoot>/output` | 产物目录 |
+| `logPath` | `COMFY_LOG` | `<comfyRoot>/user/comfyui.log` | 日志（诊断用） |
+| `python` | `COMFYFORGE_PY` | 自动挑选 | 需 Pillow+numpy |
+| `pollMs` | `COMFYFORGE_POLL_MS` | `1200` | 轮询间隔 |
+| `graceMs` | `COMFYFORGE_GRACE_MS` | `12000` | 「既不在队列也不在历史」的宽限 |
+| `autoDetect` | — | `true` | `false` 关掉自动探测 |
+
+## 模板需要什么
+
+模板只是工作流 JSON，**不带权重**。`flux_t2i` / `flux_img2img` / `flux_inpaint` / `anime_scene` 共同需要：
+
+| 文件 | 放到 | 备注 |
+|---|---|---|
+| `flux1-dev-Q4_K_S.gguf` | `models/unet/` | 需 [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) |
+| `clip_l.safetensors` | `models/clip/` | |
+| `t5xxl_fp16.safetensors` | `models/clip/` | 9.3GB；8GB 显存下走 CPU |
+| `flux-ae.safetensors` | `models/vae/` | |
+
+换成别的 FLUX / SD 系模型也行，但要自己改模板里的 `unet_name`/`clip_name`，
+并接受「原生分辨率、推荐桶」随之变化（`models.json` 就是记这件事的）。
+
+## 工具（32 个）
+
+| 类别 | 工具 |
+|---|---|
+| 体检 / 环境 | `comfy_health` `comfy_models`（list/audit）`comfy_profile` `comfy_log` `comfy_nodes` |
+| 生成 | `comfy_run` `comfy_batch` `comfy_wait` `comfy_wait_many` `comfy_queue` |
+| 视频 | `comfy_video`（start/status/frames/sheet） |
+| 看图 / 质检 | `comfy_image` `comfy_snapshot` `comfy_inspect` `comfy_look` `comfy_region` |
+| 改图 | `comfy_edit` `comfy_upload` `comfy_composite` `comfy_place` `comfy_replace` `comfy_restructure` |
+| 归档 | `comfy_workflows` `comfy_check_workflow` `comfy_picks` `comfy_triage` `comfy_templates` `comfy_runs` |
+| 记忆 | `comfy_lessons` `comfy_journal` `comfy_activity` |
+
+每个工具的详细语义、参数与「为什么这么设计」见 [`mcp/README.md`](mcp/README.md)。
+
+## 看板
+
+```powershell
+node ui/server.mjs        # http://127.0.0.1:8790
+```
+
+把 `runs/`、输出图、精选清单变成网页：批次卡片、★ 精选、`/flow` 看真实执行图。
+需要 `comfyRoot` 或 `COMFY_OUTPUT_DIR` 才能找到图。
+
+## 故障排查
+
+先跑 `node mcp/doctor.mjs`（`--offline` 跳过网络、`--json` 机器可读）。它检查：
+配置文件、运行模式、ComfyUI 连通、产物目录、日志、Python（真跑一次 import）、缓存可写、
+以及**每个模板引用的模型文件在本机是否存在**。
+
+| 现象 | 先看 |
+|---|---|
+| 全部生成失败，提示 `node_errors` 缺文件 | `comfy_models`；模板需要的模型是否在 `models/` 对应子目录 |
+| `连不上 ComfyUI` | ComfyUI 是否在跑；端口是否 8188；remote 的话 `COMFY_URL` 是否指向对 |
+| 图像指标/拼图报 Python 错 | `node mcp/doctor.mjs`；`COMFYFORGE_PY` 指向一个有 Pillow+numpy 的 python |
+| 跑到一半 OOM / 卡住无产出 | 显存碎片化：重启 ComfyUI，改单张串行 |
+| 工具调用「超时」但队列还在跑 | 这是设计如此：用 `comfy_wait` 接力，别把 `wait_s` 调大 |
+
+## 目录
+
+```
+mcp/          MCP 服务（server.mjs 工具注册、lib/ 各功能模块、scripts/imgops.py 图像运算）
+workflows/    模板（纯 JSON，可手改，不含权重）
+ui/           本地看板（旧版，已被实时面板取代，保留兼容）
+dsh-plugin/   DSH 插件：Comfy 实时台（Host 半 + Client 半）
+tools/        CLI 工具：preflight 体检 / shots 分镜切分 / storyboard 分镜与提示词 / prompt-lint 校验 / sweep 抽卡 …
+docs/         设计文档、实测报告、已知问题
+prompts/      提示词格式规范与范例
+runs/         运行记录（生成产物，不入库）
+.cache/       缩略图/拼图/下载缓存（不入库）
+```
+
+## 已知问题
+
+完整清单见 [`docs/已知问题.md`](docs/已知问题.md)：硬约束、工具缺陷、踩过的坑，每条都写清「现象 / 原因 / 现状」。
+
+几条最容易被踩到的：
+
+- **`flicker` 不能跨镜头数比较**：切点那一帧的差分天然极大，6 镜的片子一定比 1 镜的高。用它排序会系统性压分多镜头候选。
+- **产出分拣只覆盖图片**：`comfy_triage` 能把「读不出 / 纯色 / 死糊 / 过小 / 重复」的图移进 `_trash` 并可恢复，但**视频没有分拣**，且只判客观缺陷、不判好坏。
+- **权重只按文件名判断在不在**：不校验体积，0 字节占位文件也会「通过」。
+- **日志只证明跑完了，不证明跑对了**：三次质量失败的出图，日志零错误零警告。
+- **实时面板只直播「经网关提交」的任务**：你在 ComfyUI 界面里点的任务只有事后记录，这是 ComfyUI 协议限制。
+- **BUG-0010（未彻底解决）**：局部编辑/放置物体后，新物体光照方向与场景不一致（贴纸感）。
+
+## 能力清单
+
+`node mcp/doctor.mjs` 最后会打印一张能力表：现在能做哪些事、缺哪一项、补它要多大代价。
+判据只用三样可核实的东西——节点、`custom_nodes` 目录、`models` 目录里的文件；
+**工具本身不下载、不安装任何东西**，只负责告诉你「缺什么、补它值不值」。
+`comfy_health` 返回同一份清单的精简版。
+
+## 许可
+
+**MIT**，见 [`LICENSE`](LICENSE)。
+
+本仓库**不含**任何模型权重、ComfyUI 本体或 Python 运行时。随仓库分发的只有源码、工作流 JSON（纯 JSON，不含权重）、
+文档与提示词模板。你用到的 ComfyUI、FLUX / SDXL / MiniMax H3 等组件各自遵循其发布方许可，与本仓库的 MIT 授权无关——
+再分发前请自行核对。
+
+如果这个项目帮到了你，请在 issue 里告诉我你卡在哪一步，那比 star 有用。

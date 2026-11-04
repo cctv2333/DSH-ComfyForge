@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Comfy Live",
+    "description": "ComfyUI execution inside DSH: nodes light up as they run, with progress, live previews, and every past run's graph kept."
+  }
+}

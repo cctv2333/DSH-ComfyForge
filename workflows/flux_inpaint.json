@@ -1,0 +1,50 @@
+{
+  "name": "flux_inpaint",
+  "version": 1,
+  "title": "FLUX 局部重绘（蒙版内改，蒙版外不动）",
+  "description": "标准局部重绘链路：LoadImage + 蒙版 → VAEEncode → SetLatentNoiseMask → KSampler(denoise 0.6-0.85) → 解码。提示词只写「要出现在蒙版里的东西」，不要重复整幅画面的描述。",
+  "model": "flux1-dev-Q4_K_S.gguf",
+  "bindings": {
+    "image": ["7", "image"],
+    "mask": ["8", "image"],
+    "prompt": ["4", "text"],
+    "negative": ["6", "text"],
+    "denoise": ["11", "denoise"],
+    "steps": ["11", "steps"],
+    "seed": ["11", "seed"],
+    "guidance": ["5", "guidance"],
+    "filename_prefix": ["13", "filename_prefix"]
+  },
+  "randomize": ["seed"],
+  "defaults": {
+    "image": "",
+    "mask": "",
+    "prompt": "",
+    "negative": "",
+    "denoise": 0.7,
+    "steps": 24,
+    "guidance": 3.5,
+    "filename_prefix": "comfyforge/inpaint"
+  },
+  "workflow": {
+    "1": { "class_type": "UnetLoaderGGUF", "inputs": { "unet_name": "flux1-dev-Q4_K_S.gguf" } },
+    "2": { "class_type": "DualCLIPLoader", "inputs": { "clip_name1": "clip_l.safetensors", "clip_name2": "t5xxl_fp16.safetensors", "type": "flux" } },
+    "3": { "class_type": "VAELoader", "inputs": { "vae_name": "flux-ae.safetensors" } },
+    "4": { "class_type": "CLIPTextEncode", "inputs": { "clip": ["2", 0], "text": "" } },
+    "5": { "class_type": "FluxGuidance", "inputs": { "conditioning": ["4", 0], "guidance": 3.5 } },
+    "6": { "class_type": "CLIPTextEncode", "inputs": { "clip": ["2", 0], "text": "" } },
+    "7": { "class_type": "LoadImage", "inputs": { "image": "" } },
+    "8": { "class_type": "LoadImageMask", "inputs": { "image": "", "channel": "red" } },
+    "9": { "class_type": "VAEEncode", "inputs": { "pixels": ["7", 0], "vae": ["3", 0] } },
+    "10": { "class_type": "SetLatentNoiseMask", "inputs": { "samples": ["9", 0], "mask": ["8", 0] } },
+    "11": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": ["1", 0], "positive": ["5", 0], "negative": ["6", 0], "latent_image": ["10", 0],
+        "seed": 42, "steps": 24, "cfg": 1.0, "sampler_name": "euler", "scheduler": "simple", "denoise": 0.7
+      }
+    },
+    "12": { "class_type": "VAEDecode", "inputs": { "samples": ["11", 0], "vae": ["3", 0] } },
+    "13": { "class_type": "SaveImage", "inputs": { "images": ["12", 0], "filename_prefix": "comfyforge/inpaint" } }
+  }
+}

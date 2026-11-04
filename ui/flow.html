@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ComfyForge · 工作流</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#161a21; --panel-2:#1b2029; --line:#252b36; --line-2:#2f3746;
+    --txt:#e7eaf0; --dim:#98a2b3; --dim-2:#6b7686; --accent:#7dd3fc;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.55 "Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+  header{display:flex;align-items:center;gap:16px;padding:14px 24px;border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(15,17,21,.94);backdrop-filter:blur(8px);z-index:10}
+  h1{font-size:16px;margin:0;font-weight:600;letter-spacing:.2px}
+  h1 span{color:var(--accent)}
+  .nav{color:var(--accent);text-decoration:none;font-size:13px}
+  .grow{flex:1}
+  .seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .seg button{background:transparent;border:0;color:var(--dim);padding:6px 12px;font-size:13px;cursor:pointer}
+  .seg button.on{background:var(--panel-2);color:var(--txt)}
+  main{padding:20px 24px 48px;max-width:1400px;margin:0 auto}
+  h2{font-size:14px;font-weight:600;color:#c9d1dc;margin:0 0 4px}
+  .sub{color:var(--dim-2);font-size:12.5px;margin:0 0 14px}
+
+  .loop{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+  @media (max-width:1000px){ .loop{grid-template-columns:repeat(2,minmax(0,1fr))} }
+  .step{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 13px}
+  .step .n{font-size:11px;color:var(--dim-2);letter-spacing:.08em}
+  .step b{display:block;font-size:13px;margin:3px 0 3px;font-weight:600}
+  .step small{color:var(--dim);font-size:12px;line-height:1.5}
+  .step.human{border-color:#334155;background:#151d26}
+
+  .bar{display:flex;align-items:center;gap:8px;margin:16px 0 10px}
+  .bar .meta{color:var(--dim-2);font-size:12.5px;margin-left:4px}
+  .btn{background:var(--panel-2);border:1px solid var(--line);color:var(--txt);border-radius:7px;padding:4px 10px;font-size:12.5px;cursor:pointer}
+  .btn:hover{border-color:var(--line-2)}
+  .canvas{background:#0b0d11;border:1px solid var(--line);border-radius:12px;overflow:auto;max-height:66vh;padding:2px}
+  .legend{display:flex;flex-wrap:wrap;gap:14px;margin-top:10px;color:var(--dim-2);font-size:12px}
+  .legend i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:5px;vertical-align:middle}
+  .side{margin-top:18px;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .card h3{margin:0 0 8px;font-size:12.5px;color:#c9d1dc;font-weight:600}
+  .card table{width:100%;border-collapse:collapse;font-size:12.5px}
+  .card td{padding:3px 0;vertical-align:top}
+  .card td:first-child{color:var(--dim-2);width:42%}
+  code{background:#0b0d11;border:1px solid var(--line);border-radius:4px;padding:0 4px;font-size:12px}
+  .empty{color:var(--dim);padding:40px;text-align:center}
+</style>
+</head>
+<body>
+<header>
+  <h1>ComfyForge <span>工作流</span></h1>
+  <a class="nav" href="/">← 看板</a>
+  <div class="grow"></div>
+  <div class="seg" id="src">
+    <button data-src="history" class="on">实际执行</button>
+    <button data-src="template">模板</button>
+  </div>
+</header>
+<main>
+  <section>
+    <h2>一、我干活的流程</h2>
+    <p class="sub">图上每一步都在代码里真实发生；产物、参数、判定都会落盘。</p>
+    <div class="loop">
+      <div class="step human"><div class="n">01</div><b>定参数</b><small>提示词、模型、尺寸桶、seed、步数</small></div>
+      <div class="step"><div class="n">02</div><b>静态校验</b><small>节点 / 必填 / 连线 / 枚举 / 数值范围 / 模型桶</small></div>
+      <div class="step"><div class="n">03</div><b>提交</b><small>POST /prompt，失败时解析 node_errors</small></div>
+      <div class="step"><div class="n">04</div><b>等 ≤55s</b><small>没完成返回 pending，下次接力</small></div>
+      <div class="step"><div class="n">05</div><b>取图 + 体检</b><small>分辨率、sharp512、裁切、对比</small></div>
+      <div class="step human"><div class="n">06</div><b>拼对比表</b><small>多张一图，带编号 / seed / 判定</small></div>
+      <div class="step human"><div class="n">07</div><b>我挑 → 你挑</b><small>写 picks.json，看板点 ★ 同步</small></div>
+      <div class="step"><div class="n">08</div><b>迭代</b><small>改参数再跑，经验进 lessons</small></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>二、实际执行的节点图</h2>
+    <p class="sub">节点和连线来自 ComfyUI 的 history（最近一次成功执行），不是手画示意图。</p>
+    <div class="bar">
+      <button class="btn" id="minus">−</button>
+      <button class="btn" id="plus">+</button>
+      <button class="btn" id="fit">适应宽度</button>
+      <span class="meta" id="meta"></span>
+    </div>
+    <div class="canvas" id="canvas"><div class="empty">加载中…</div></div>
+    <div class="legend" id="legend"></div>
+    <div class="side" id="side"></div>
+  </section>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+let SOURCE = 'history';
+let DATA = null;
+let SCALE = 1;
+
+const CAT = [
+  { re: /bootleg|loader|loaders/i, color: '#5b7fa6', label: '加载器' },
+  { re: /conditioning|text/i, color: '#8a6fb0', label: '条件 / 文本' },
+  { re: /sampling|sampler/i, color: '#c08a3e', label: '采样' },
+  { re: /latent/i, color: '#6b7686', label: '潜空间' },
+  { re: /vae|decod/i, color: '#4f8a6a', label: 'VAE' },
+  { re: /image|save/i, color: '#a85f7a', label: '图像 / 输出' },
+];
+const catOf = (cat, cls) => CAT.find((c) => c.re.test(cat || '') || c.re.test(cls || '')) || { color: '#5c6675', label: '其它' };
+
+async function load(){
+  const r = await fetch(`/api/graph?source=${SOURCE}`, { cache: 'no-store' });
+  const g = await r.json();
+  if (!g.ok) { $('#canvas').innerHTML = `<div class="empty">${esc(g.error || '读取失败')}</div>`; return; }
+  DATA = g;
+  $('#meta').textContent = `${g.nodes.length} 个节点 · ${g.edges.length} 条连线${g.ranAt ? ' · ' + new Date(g.ranAt).toLocaleString('zh-CN', {hour12:false}) : ''}`;
+  renderGraph();
+  renderLegend();
+  renderSide();
+}
+
+function computeLayout(g){
+  const parents = Object.fromEntries(g.nodes.map(n => [n.id, []]));
+  const children = Object.fromEntries(g.nodes.map(n => [n.id, []]));
+  for (const e of g.edges) { (parents[e.to] ||= []).push(e.from); (children[e.from] ||= []).push(e.to); }
+
+  const rank = {};
+  const calc = (id, seen = new Set()) => {
+    if (rank[id] !== undefined) return rank[id];
+    if (seen.has(id)) return 0;
+    seen.add(id);
+    let d = 0;
+    for (const p of parents[id] || []) d = Math.max(d, calc(p, seen) + 1);
+    rank[id] = d;
+    return d;
+  };
+  g.nodes.forEach(n => calc(n.id));
+
+  const cols = {};
+  for (const n of g.nodes) (cols[rank[n.id]] ||= []).push(n.id);
+  const ranks = Object.keys(cols).map(Number).sort((a, b) => a - b);
+
+  const order = {};
+  for (const r of ranks) order[r] = cols[r].slice().sort((a, b) => Number(a) - Number(b));
+  const posIn = (id, r) => order[r].indexOf(id);
+  for (let pass = 0; pass < 2; pass++) {
+    for (const r of ranks) {
+      if (r === 0) continue;
+      order[r].sort((a, b) => {
+        const ba = (parents[a] || []).map(p => posIn(p, r - 1)).filter(x => x >= 0);
+        const bb = (parents[b] || []).map(p => posIn(p, r - 1)).filter(x => x >= 0);
+        const va = ba.length ? ba.reduce((s, x) => s + x, 0) / ba.length : 999;
+        const vb = bb.length ? bb.reduce((s, x) => s + x, 0) / bb.length : 999;
+        return va - vb;
+      });
+    }
+  }
+
+  const W = 210, H = 62, GX = 96, GY = 26, PAD = 26;
+  const pos = {};
+  let maxRows = 1;
+  for (const r of ranks) {
+    const col = order[r];
+    maxRows = Math.max(maxRows, col.length);
+    col.forEach((id, i) => { pos[id] = { x: PAD + r * (W + GX), y: PAD + i * (H + GY) }; });
+  }
+  return { pos, W, H, width: PAD * 2 + (ranks.length - 1) * (W + GX) + W, height: PAD * 2 + (maxRows - 1) * (H + GY) + H };
+}
+
+function renderGraph(){
+  const g = DATA;
+  const { pos, W, H, width, height } = computeLayout(g);
+  let svg = `<svg id="svg" viewBox="0 0 ${width} ${height}" width="${Math.round(width * SCALE)}" height="${Math.round(height * SCALE)}" xmlns="http://www.w3.org/2000/svg" style="display:block">`;
+  svg += `<defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#3f4a5c"/></marker></defs>`;
+
+  for (const e of g.edges) {
+    const a = pos[e.from], b = pos[e.to];
+    if (!a || !b) continue;
+    const x1 = a.x + W, y1 = a.y + H / 2, x2 = b.x, y2 = b.y + H / 2;
+    const mx = (x1 + x2) / 2;
+    svg += `<path d="M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}" fill="none" stroke="#3f4a5c" stroke-width="1.5" marker-end="url(#ar)"/>`;
+    svg += `<text x="${mx}" y="${(y1 + y2) / 2 - 5}" fill="#66707f" font-size="10" text-anchor="middle">${esc(e.input)}</text>`;
+  }
+
+  for (const n of g.nodes) {
+    const p = pos[n.id];
+    const c = catOf(n.category, n.class_type);
+    const vals = Object.entries(n.inputs || {}).filter(([, v]) => !Array.isArray(v));
+    const summary = vals.slice(0, 2).map(([k, v]) => `${k}=${String(v).length > 16 ? String(v).slice(0, 15) + '…' : v}`).join('  ');
+    svg += `<g>
+      <rect x="${p.x}" y="${p.y}" width="${W}" height="${H}" rx="8" fill="#151a22" stroke="#2b3340"/>
+      <rect x="${p.x}" y="${p.y}" width="4" height="${H}" rx="2" fill="${c.color}"/>
+      <text x="${p.x + 14}" y="${p.y + 21}" fill="#e7eaf0" font-size="12.5" font-weight="600">${esc(n.display_name || n.class_type)}</text>
+      <text x="${p.x + 14}" y="${p.y + 37}" fill="#8d97a6" font-size="10.5">${esc(n.class_type)} · #${esc(n.id)}</text>
+      <text x="${p.x + 14}" y="${p.y + 52}" fill="#6b7686" font-size="10.5">${esc(summary)}</text>
+    </g>`;
+  }
+  svg += '</svg>';
+  $('#canvas').innerHTML = svg;
+}
+
+function renderLegend(){
+  const seen = new Map();
+  for (const n of DATA.nodes) {
+    const c = catOf(n.category, n.class_type);
+    seen.set(c.label, c.color);
+  }
+  $('#legend').innerHTML = [...seen].map(([k, v]) => `<span><i style="background:${v}"></i>${esc(k)}</span>`).join('');
+}
+
+function renderSide(){
+  const g = DATA;
+  const kv = [];
+  if (g.source === 'history') {
+    kv.push(['来源', `history · ${g.name}`]);
+    if (g.ranAt) kv.push(['执行时间', new Date(g.ranAt).toLocaleString('zh-CN', { hour12: false })]);
+  } else {
+    kv.push(['来源', `模板 · ${g.name}`]);
+    if (g.title) kv.push(['标题', g.title]);
+  }
+  kv.push(['节点 / 连线', `${g.nodes.length} / ${g.edges.length}`]);
+  const bind = Object.keys(g.bindings || {});
+  if (bind.length) kv.push(['可调参数', bind.join(', ')]);
+
+  const promptNode = g.nodes.find((n) => n.class_type === 'CLIPTextEncode' && String(n.inputs?.text || '').trim());
+  const latent = g.nodes.find((n) => /Latent/.test(n.class_type));
+  const sampler = g.nodes.find((n) => n.class_type === 'KSampler');
+  if (latent) kv.push(['尺寸', `${latent.inputs.width}×${latent.inputs.height}`]);
+  if (sampler) kv.push(['seed / steps', `${sampler.inputs.seed} / ${sampler.inputs.steps}`]);
+
+  let html = `<div class="card"><h3>这次执行</h3><table>${kv.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('')}</table></div>`;
+  if (promptNode) {
+    html += `<div class="card"><h3>提示词</h3><div style="font-size:12.5px;color:#c3cbd6;line-height:1.55">${esc(promptNode.inputs.text)}</div></div>`;
+  }
+  $('#side').innerHTML = html;
+}
+
+function applyScale(next){
+  SCALE = Math.max(0.4, Math.min(1.6, next));
+  renderGraph();
+}
+
+$('#plus').onclick = () => applyScale(SCALE + 0.1);
+$('#minus').onclick = () => applyScale(SCALE - 0.1);
+$('#fit').onclick = () => {
+  if (!DATA) return;
+  const cw = $('#canvas').clientWidth - 8;
+  const { width } = computeLayout(DATA);
+  applyScale(Math.min(1, cw / width));
+};
+$('#src').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  [...$('#src').children].forEach(x => x.classList.toggle('on', x === b));
+  SOURCE = b.dataset.src;
+  SCALE = 1;
+  load().then(() => $('#fit').click());
+});
+
+load().then(() => $('#fit').click());
+</script>
+</body>
+</html>
