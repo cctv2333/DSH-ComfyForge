@@ -1240,7 +1240,7 @@ server.tool(
 
 server.tool(
   'comfy_triage',
-  '淘汰/清理：只按客观缺陷（读不出/ 近似纯色 / 死糊 / 过小 / 重复）判定，不做审美判断；执行时移到 _trash/ 并写 manifest，不删除；picks 里的图永不移动；可 restore 一键恢复。',
+  '淘汰/清理：只按客观缺陷判定，不做审美判断。图片看「读不出 / 近似纯色 / 死糊 / 过小 / 重复」，视频看「大小 / 时长 / 读不出」。执行时移到 _trash/ 并写 manifest，不删除；picks 里的图永不移动；可 restore 一键恢复。',
   {
     dir: z.string().optional().describe('输出目录名（如 anime）或绝对路径；默认整个输出根目录'),
     action: z.enum(['scan', 'apply', 'restore']).default('scan'),
