@@ -28,32 +28,46 @@
 
 ## 二、真正的问题（按严重度）
 
-### P0：`server.mjs` 单文件承载 30 个工具的注册 + 全部 payload 构造
+### P0：`server.mjs` 单文件承载 30 个工具的注册 + 全部 payload 构造 —— ✅ 已完成（2026-11-05，v0.3.3）
 
-现状：1,903 行，包含
-- 30 个 `server.tool(...)` 注册
-- 图片/蒙版/合成/替换的 workflow 组装
-- 指标裁剪、路径处理、错误包装
+原状：1,903 行（后来涨到 2,100 行 / 33 个工具）。
 
 后果：
 - 改一个工具要在一个大文件里跳来跳去；
 - 新增"视频"族时只能继续往里堆；
 - 编译期没有任何类型约束，字段写错只能靠跑。
 
-建议拆成（按域，不动 lib）：
+**实际拆法**（和当初的设想略有出入，按真实工具名归域）：
 
 ```
 mcp/
-  server.mjs            # 只做 server 创建 + import 各工具族 + 启动（~120 行）
+  server.mjs          81 行   # 只做 imports + 域加载 + 传输/启动
   tools/
-    image.mjs           # run/sweep/batch/look/region/inspect/snapshot
-    edit.mjs            # edit/replace/restructure/composite/place/upload
-    workflow.mjs        # templates/runs/workflows/nodes/check
-    system.mjs          # health/models/profile/queue/log/activity/doctor
-    media.mjs           # video/sheet/frames（新增）
+    ctx.mjs          481 行   # imports + helpers + 活动日志包装 + 域间共享小工具（newestOutputs 等）
+    system.mjs       252 行   # health / nodes / models / profile / log / activity
+    generate.mjs     477 行   # run / wait / queue / batch / wait_many / sweep
+    view.mjs         259 行   # image / snapshot / inspect / look / region / picks / triage
+    edit.mjs         502 行   # upload / edit / replace / composite / place / restructure
+    library.mjs      218 行   # templates / runs / lessons / journal / workflows / check_workflow
+    media.mjs        181 行   # video / lint_prompt
 ```
 
-工作量：**半天**，全部是机械搬移 + 回归（selftest 75 项可兜底）。
+注册点数：原 33 → 拆后 6+6+7+6+6+2 = **33**，`server.mjs` 里 **0**。
+
+**拆分是靠脚本做的**（`.cache/split-server.mjs`：括号匹配找 33 个 `server.tool(...)` 块，机械搬移，逻辑一行未改），
+因为手抄 2000 行必然出错。过程中踩到四个坑，都值得记：
+
+1. **`./lib/` 相对路径要变成 `../lib/`** —— 域文件移到 `mcp/tools/` 后，漏改就是 `ERR_MODULE_NOT_FOUND`；
+   而 `node --check` **查不出来**（它只查语法，不解析模块）。
+2. **尾部定义的 `newestOutputs` 被工具块调用** —— 留在 server.mjs 里就是跨文件 ReferenceError。
+   生成器改成"扫尾部顶格定义，若在前面被引用就搬进 ctx"。
+3. **只认顶格定义** —— 第一版把函数体内的 `const p / st / subfolder` 也当成顶层导出，`export {...}` 直接 SyntaxError。
+4. **shebang 不能进被 import 的模块** —— `#!/usr/bin/env node` 搬进 ctx.mjs 立刻语法错误。
+
+另外：源文件被覆盖成薄版后，生成器曾照样跑出 6 个空域文件。现在加了防呆——工具块 < 30 个就拒绝执行。
+
+回归：selftest **80/80**（含 remote 模式 5 条）、unit **21/21**。版本号改为从 `package.json` 读，
+顺手修掉一个同源问题：selftest 里写死 `serverInfo.version = 0.3.0`，发版就红一条 —— 测试自己也在漂移。
 
 ### P1：`check-workflow` 逻辑在 `tools/`，MCP 和看板都用不上 —— ✅ 已完成（2026-11-04）
 

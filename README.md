@@ -1,6 +1,6 @@
 # ComfyForge
 
-**版本 `0.3.2`** · MIT · <https://github.com/cctv2333/DSH-ComfyForge>
+**版本 `0.3.3`** · MIT · <https://github.com/cctv2333/DSH-ComfyForge>
 
 把本机 ComfyUI 变成 **agent 能看见自己产出、能自检、能按证据改** 的工具链：
 33 个 MCP 工具 + 一套客观质检 + 一个执行实时面板 + 一组零依赖的 CLI 工具。
@@ -253,7 +253,8 @@ node ui/server.mjs        # http://127.0.0.1:8790
 ## 目录
 
 ```
-mcp/          MCP 服务（server.mjs 工具注册、lib/ 各功能模块、scripts/imgops.py 图像运算）
+mcp/          MCP 服务（server.mjs 只做装配；lib/ 各功能模块；tools/ 按域拆开的工具注册）
+mcp/tools/    system / generate / view / edit / library / media + ctx.mjs（共享上下文）
 workflows/    模板（纯 JSON，可手改，不含权重）
 ui/           本地看板（旧版，已被实时面板取代，保留兼容）
 dsh-plugin/   DSH 插件：Comfy 实时台（Host 半 + Client 半）
@@ -308,6 +309,11 @@ runs/         运行记录（生成产物，不入库）
 
 ## 更新记录
 
+- **0.3.3** —— **纯结构重构，行为不变**（回归：selftest 80/80、unit 21/21）。
+  `server.mjs` 从 2,100 行拆成 81 行装配层 + `mcp/tools/` 下 6 个域文件（system / generate / view / edit / library / media）
+  加一个 `ctx.mjs` 共享上下文。注册点数仍是 33，`server.mjs` 里 0。
+  拆分由脚本按括号匹配机械搬移，逻辑一行未改。详见 [`docs/TOOL-AUDIT.md`](docs/TOOL-AUDIT.md) 的 P0（那条挂了很久）。
+  顺带修：版本号改为从 `package.json` 读（原来在 `ctx`/`selftest` 里各写死一份，发版必漂移）。
 - **0.3.2** —— 把「已知问题」里能修的都修了（都是小改动，但每一件都带判定依据）：
   - **`flickerNoCut`**：切点前十帧的差分天然极大，用 `flicker` 排序会系统性压分多镜头候选。
     现在剔除切点前后 2 帧再算一次，`score` 默认用这个口径（实测 A 六镜 8.402 → 7.582，B 一镜不变）。

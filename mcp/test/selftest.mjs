@@ -1,7 +1,7 @@
 // test/selftest.mjs — 协议 + 工具 + 崩溃回归测试（不跑真实生成，秒级）
 // 运行：node test/selftest.mjs
 import { spawn } from 'node:child_process';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -54,7 +54,10 @@ console.log('== 1. 协议与工具清单 ==');
 await withClient(async (client) => {
   const info = client.getServerVersion();
   ok('serverInfo.name = comfy-forge', info?.name === 'comfy-forge', JSON.stringify(info));
-  ok('serverInfo.version = 0.3.0', info?.version === '0.3.0');
+  // 版本号不写死：从 package.json 读，断言「服务端版本 == package.json 版本」。
+  // 以前这里写死 0.3.0，发版时改 package.json 就会红一条 —— 测试自己也在漂移。
+  const pkgVersion = JSON.parse(readFileSync(join(HERE, '..', '..', 'package.json'), 'utf8')).version;
+  ok(`serverInfo.version 与 package.json 一致（${pkgVersion}）`, info?.version === pkgVersion, `server=${info?.version} pkg=${pkgVersion}`);
 
   const { tools } = await client.listTools();
   const names = tools.map((t) => t.name).sort();
