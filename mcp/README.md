@@ -8,7 +8,7 @@
 
 - 传输：stdio（MCP 官方 SDK 1.30，JSON-RPC 换行分帧）
 - 目标：`http://127.0.0.1:8188`（`COMFY_URL` 或 `comfyforge.config.json` 可改）
-- 32 个工具；图像运算走本地 Python 的 Pillow + numpy（自动挑选，不写死路径）
+- 33 个工具；图像运算走本地 Python 的 Pillow + numpy（自动挑选，不写死路径）
 
 ## 挂载
 
@@ -79,6 +79,11 @@ node test/e2e.mjs --sizes 512x512,768x768,1024x1024   # 分辨率对比 + 联络
 | `comfy_restructure` | **全局重构**：场景边缘 + 物体边缘当控制图，从空 latent 整张重画（局部改不动时用；见 BUG-0018） |
 | `comfy_triage` | 淘汰：只按客观缺陷判定，移入 `_trash` + manifest，可 restore |
 | `comfy_journal` | 工作 / Bug 日志：写进 `docs/journal/`，可 list / search |
+| `comfy_activity` | 「我刚才做了什么」：最近 N 次工具调用（耗时/成败/返回摘要/附图） |
+| `comfy_video` | **视频**：`start`/`status`（可就地续等）/`frames` 抽帧/`sheet` 拼图/`metrics` 客观指标 |
+| `comfy_sweep` | **分辨率试错**：同 seed 同提示词跑一组尺寸，按客观指标排序找原生桶 |
+| `comfy_check_workflow` | **工作流体检**：给 `path` 或 `json`，分 A/B/C/D 四档报缺件（remote 模式下会明说 A/D 档不可判） |
+| `comfy_lint_prompt` | **提示词体检**：纯规则、毫秒级、不联网；查段落/引用闭合/时间码/帧数 5+17k/手分工 |
 
 ## 工作与 Bug 日志（写在工具里）
 

@@ -1,9 +1,9 @@
 # ComfyForge
 
-**版本 `0.3.0`** · MIT · <https://github.com/cctv2333/DSH-ComfyForge>
+**版本 `0.3.1`** · MIT · <https://github.com/cctv2333/DSH-ComfyForge>
 
 把本机 ComfyUI 变成 **agent 能看见自己产出、能自检、能按证据改** 的工具链：
-32 个 MCP 工具 + 一套客观质检 + 一个执行实时面板 + 一组零依赖的 CLI 工具。
+33 个 MCP 工具 + 一套客观质检 + 一个执行实时面板 + 一组零依赖的 CLI 工具。
 
 它不是「一键出图」软件。核心是这条闭环：
 
@@ -187,17 +187,17 @@ Claude Desktop / 其他 MCP 客户端同理：stdio，命令 `node`，参数 `mc
 换成别的 FLUX / SD 系模型也行，但要自己改模板里的 `unet_name`/`clip_name`，
 并接受「原生分辨率、推荐桶」随之变化（`models.json` 就是记这件事的）。
 
-## 工具（32 个）
+## 工具（33 个）
 
 | 类别 | 工具 |
 |---|---|
 | 体检 / 环境 | `comfy_health` `comfy_models`（list/audit）`comfy_profile` `comfy_log` `comfy_nodes` |
-| 生成 | `comfy_run` `comfy_batch` `comfy_wait` `comfy_wait_many` `comfy_queue` |
-| 视频 | `comfy_video`（start/status/frames/sheet） |
+| 生成 | `comfy_run` `comfy_batch` `comfy_wait` `comfy_wait_many` `comfy_queue` `comfy_sweep` |
+| 视频 | `comfy_video`（start/status/frames/sheet/metrics） |
 | 看图 / 质检 | `comfy_image` `comfy_snapshot` `comfy_inspect` `comfy_look` `comfy_region` |
 | 改图 | `comfy_edit` `comfy_upload` `comfy_composite` `comfy_place` `comfy_replace` `comfy_restructure` |
 | 归档 | `comfy_workflows` `comfy_check_workflow` `comfy_picks` `comfy_triage` `comfy_templates` `comfy_runs` |
-| 记忆 | `comfy_lessons` `comfy_journal` `comfy_activity` |
+| 记忆 / 校验 | `comfy_lessons` `comfy_journal` `comfy_activity` `comfy_lint_prompt` |
 
 每个工具的详细语义、参数与「为什么这么设计」见 [`mcp/README.md`](mcp/README.md)。
 
@@ -271,6 +271,19 @@ runs/         运行记录（生成产物，不入库）
 判据只用三样可核实的东西——节点、`custom_nodes` 目录、`models` 目录里的文件；
 **工具本身不下载、不安装任何东西**，只负责告诉你「缺什么、补它值不值」。
 `comfy_health` 返回同一份清单的精简版。
+
+## 更新记录
+
+- **0.3.1** —— 修 P0：**remote 模式（不设 `comfyRoot`）下整个 MCP 服务启动即崩**。
+  `mcp/lib/workflowcheck.mjs` 顶层 `path.join(null, …)` 在 ESM 链接阶段抛 `TypeError`，工具一个都注册不上。
+  现在一律判空，并且 `comfy_check_workflow` 会明说「remote 模式下 A 档/D 档不可判，结论只覆盖 B/C 档」，不再静默给错结论。
+  新增第 13 组回归用例（5 条），并把 bug 注回去验证过它确实会红。
+  README 工具数 32 → **33**（`server.tool(` 实测 33 处），`mcp/README.md` 补齐 5 个缺失条目。
+- **0.3.0** —— 首个公开版本。
+
+> 这个 P0 是**外部审查发现**的。它值得写在这，因为它暴露的是共性问题：
+> **开发机上永远走不到的路径（比如本机没装 ComfyUI 的 remote 模式），必须由测试代跑。**
+> 我在自己机器上有 ComfyUI，`COMFY_ROOT` 永不为 null，所以这条路我一次都没走过。
 
 ## 许可
 

@@ -18,8 +18,15 @@ const SKIP_DIRS_JS = /^(__pycache__|\.git|node_modules|\.github|assets|images|do
 
 const norm = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
 
-export const CUSTOM_NODES = path.join(COMFY_ROOT, 'custom_nodes');
-const NODE_MAP_PATH = path.join(CUSTOM_NODES, 'ComfyUI-Manager', 'extension-node-map.json');
+// remote 模式（没设 comfyRoot）时 COMFY_ROOT 是 null —— 这里必须判空。
+// 曾因为裸写 path.join(null, ...) 导致整个 MCP 服务在 ESM 链接阶段就崩、工具一个都注册不上。
+// 教训：本机一直有 ComfyUI，COMFY_ROOT 永不为 null，所以这条路径从来没被走到过。
+export const CUSTOM_NODES = COMFY_ROOT ? path.join(COMFY_ROOT, 'custom_nodes') : null;
+const NODE_MAP_PATH = CUSTOM_NODES
+  ? path.join(CUSTOM_NODES, 'ComfyUI-Manager', 'extension-node-map.json')
+  : null;
+/** 是否具备"看本地 custom_nodes"的能力。false = remote 模式，只能靠 /object_info 判 A/B 档 */
+export const LOCAL_READY = Boolean(CUSTOM_NODES);
 
 /** 从 UI 格式 / API 格式 / subgraph 里抽节点类型 */
 export function extractTypes(doc) {
@@ -65,6 +72,7 @@ export function collectWorkflowFiles(target) {
 }
 
 export function loadNodeMap() {
+  if (!NODE_MAP_PATH) return {};
   try {
     return JSON.parse(fs.readFileSync(NODE_MAP_PATH, 'utf8'));
   } catch {
@@ -86,6 +94,7 @@ export function typeToRepoIndex(nodeMap) {
 }
 
 export function installedPackDirs() {
+  if (!CUSTOM_NODES) return new Set();
   try {
     return new Set(
       fs.readdirSync(CUSTOM_NODES)
@@ -106,7 +115,7 @@ export function installedPackDirs() {
 export function scanLocalDefs(wanted) {
   const found = new Map();
   const todo = new Set(wanted);
-  if (!todo.size || !fs.existsSync(CUSTOM_NODES)) return found;
+  if (!todo.size || !CUSTOM_NODES || !fs.existsSync(CUSTOM_NODES)) return found;
 
   for (const dir of fs.readdirSync(CUSTOM_NODES)) {
     const packDir = path.join(CUSTOM_NODES, dir);
@@ -152,7 +161,7 @@ export function scanLocalDefs(wanted) {
  */
 export function scanFrontendDefs(wanted) {
   const found = new Map();
-  if (!wanted.length || !fs.existsSync(CUSTOM_NODES)) return found;
+  if (!wanted.length || !CUSTOM_NODES || !fs.existsSync(CUSTOM_NODES)) return found;
 
   const bases = new Map();
   for (const t of wanted) {
@@ -191,7 +200,7 @@ export function scanFrontendDefs(wanted) {
       }
     }
   };
-  walk(CUSTOM_NODES, 0);
+  if (CUSTOM_NODES) walk(CUSTOM_NODES, 0);
   return found;
 }
 
@@ -254,12 +263,19 @@ export async function checkWorkflows(targets, opts = {}) {
     report.push({ file: d.file, nodeCount: d.types.size, format: workflowFormat(d.doc), missing });
   }
 
-  return { knownTypes: known.size, report, totalMissing };
+  return { knownTypes: known.size, report, totalMissing, localAvailable: LOCAL_READY };
 }
 
 /** 把 report 渲染成人读文本（CLI 与 MCP 共用） */
-export function formatReport({ knownTypes, report, totalMissing }, { cwd = process.cwd() } = {}) {
-  const lines = [`已加载节点类型：${knownTypes}`];
+export function formatReport({ knownTypes, report, totalMissing, localAvailable }, { cwd = process.cwd() } = {}) {
+  const lines = [];
+  if (localAvailable === false) {
+    lines.push('⚠ remote 模式（没设 comfyRoot）：看不到本地 custom_nodes，');
+    lines.push('  A 档（已装未加载）与 D 档（前端节点）无法判定，结论只覆盖 B 档（未安装）/ C 档（来源未知）。');
+    lines.push('  想完整检查：设 COMFY_ROOT 指向 ComfyUI 安装目录后重跑。');
+    lines.push('');
+  }
+  lines.push(`已加载节点类型：${knownTypes}`);
   for (const r of report) {
     const rel = path.relative(cwd, r.file) || r.file;
     if (r.error) { lines.push(`✗ ${rel}\n    ${r.error}`); continue; }

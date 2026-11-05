@@ -264,5 +264,49 @@ await new Promise((resolve) => {
 console.log('== 12. 目录结构 ==');
 ok('workflows/ 有模板', readdirSync(join(HERE, '..', '..', 'workflows')).some((f) => f.endsWith('.json')));
 
+// ---------------------------------------------------------------------------
+// 13. remote 模式回归（comfyRoot 留空）
+//
+// 为什么必须有这一组：本机装了 ComfyUI，COMFY_ROOT 永远不是 null，
+// 于是"remote 模式"这条路径在开发机上**永远不会被走到**。
+// 曾因此漏掉一个 P0：workflowcheck.mjs 顶层 path.join(null, ...) 让整个服务
+// 在 ESM 链接阶段就崩、工具一个都注册不上。所以由测试代替开发机去走这条路。
+console.log('== 13. remote 模式回归：comfyRoot 留空时不得崩 ==');
+{
+  const { mkdtempSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const dir = mkdtempSync(join(tmpdir(), 'cf-remote-'));
+  const cfg = join(dir, 'cfg.json');
+  writeFileSync(cfg, JSON.stringify({ autoDetect: false }), 'utf8'); // 不能带 BOM，否则 JSON.parse 失败会退回自动探测
+  const env = { ...process.env, COMFYFORGE_CONFIG: cfg };
+  delete env.COMFY_ROOT; // 关键：这一项为空才会进入 remote
+
+  const runNode = (args, { writeStdin = false } = {}) => new Promise((resolve) => {
+    const child = spawn(NODE, args, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    let out = '', err = '', done = false;
+    const timer = setTimeout(() => { if (!done) { child.kill(); resolve({ code: 'timeout', out, err }); } }, 25_000);
+    child.stdout.on('data', (d) => { out += d.toString(); });
+    child.stderr.on('data', (d) => { err += d.toString(); });
+    child.on('exit', (code) => { done = true; clearTimeout(timer); resolve({ code, out, err }); });
+    if (writeStdin) {
+      child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'remote', version: '1' } } }) + '\n');
+      child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'comfy_health', arguments: {} } }) + '\n');
+      setTimeout(() => child.stdin.end(), 1500);
+    } else {
+      child.stdin.end();
+    }
+  });
+
+  const wcUrl = new URL('../lib/workflowcheck.mjs', import.meta.url).href;
+  const imp = await runNode(['-e', `import(${JSON.stringify(wcUrl)}).then(m=>console.log('LOCAL_READY='+m.LOCAL_READY)).catch(e=>{console.error(String(e&&e.message||e));process.exit(3)})`]);
+  ok('remote 模式下 workflowcheck 能加载', imp.code === 0, `code=${imp.code} ${imp.err.slice(0, 160)}`);
+  ok('remote 模式下 LOCAL_READY 为 false（而不是崩）', /LOCAL_READY=false/.test(imp.out), imp.out.slice(0, 120));
+  ok('remote 模式下无 path.join(null) 报错', !/path.*argument must be of type string/i.test(imp.err), imp.err.slice(0, 160));
+
+  const srv = await runNode([SERVER], { writeStdin: true });
+  ok('remote 模式下 MCP 服务能启动并干净退出', srv.code === 0, `code=${srv.code} ${srv.err.slice(0, 200)}`);
+  ok('remote 模式启动无 TypeError', !/TypeError|ERR_INVALID_ARG_TYPE/.test(srv.err), srv.err.slice(0, 200));
+}
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);
