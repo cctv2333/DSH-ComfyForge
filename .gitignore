@@ -33,9 +33,6 @@ workflows/h3-multiref-user-2pass.api.json
 # 一次性实验脚本（本机路径硬编码，不公开）
 tools/experiments/
 
-# 依赖实验脚本的内部工具（等把 clip-score 正式化再放出来）
-tools/sheet-batch.mjs
-
 # 内部复盘与交接（含对话原话、客户信息，不公开）
 docs/交接报告-*.md
 docs/工程复查-*.md

@@ -23,12 +23,15 @@ export function framesFor(seconds) {
   return { frames, seconds: +(frames / FPS).toFixed(3) };
 }
 
+// 默认模型文件名。不同机器上同名模型可能叫别的名字（-fp16 / -int8 / 发布者改名），
+// 所以每个都能用环境变量覆盖；找不到时 modelslots 会给出候选，别硬改代码。
+const envOr = (k, d) => process.env[k] || d;
 const MODELS = {
-  unet: 'DasiwaMinimaxH3_dasiwaHybridV2_int8.safetensors',
-  lora: 'TaoMate-H3-3step.safetensors',
-  clip: 'qwen3vl_32b_minimax_h3_int8_convrot.safetensors',
-  vae: 'minimax_h3_video_vae_fp16.safetensors',
-  audioVae: 'minimax_h3_audio_vae_fp32.safetensors',
+  unet: envOr('COMFYFORGE_H3_UNET', 'DasiwaMinimaxH3_dasiwaHybridV2_int8.safetensors'),
+  lora: envOr('COMFYFORGE_H3_LORA', 'TaoMate-H3-3step.safetensors'),
+  clip: envOr('COMFYFORGE_H3_CLIP', 'qwen3vl_32b_minimax_h3_int8_convrot.safetensors'),
+  vae: envOr('COMFYFORGE_H3_VAE', 'minimax_h3_video_vae_fp16.safetensors'),
+  audioVae: envOr('COMFYFORGE_H3_AUDIO_VAE', 'minimax_h3_audio_vae_fp32.safetensors'),
 };
 
 /**
@@ -363,10 +366,16 @@ export function makeVideoSheet(videoPath, { cols = 5, rows = 3, outDir } = {}) {
  * 返回：
  *   duration / fps / width / height / hasAudio / loudnessDb
  *   flicker      连续帧平均亮度差（0–255 尺度的 YAVG 差）——越大越闪
+ *   flickerNoCut **剔除切点前后 2 帧后的同口径值**；跨镜头数比较只能用这个
  *   flickerMax   最差的那一对相邻帧
  *   blackRuns    黑帧段数（blackdetect）
  *   cuts         强切点个数（scene > 0.4）——分镜设计上是好事，意外切点是坏事
+ *   cutTimes     切点时间（秒）
  *   score        越小越"稳"的排序分（只用于挑种子，不是画质评分）
+ *
+ * 为什么要有 flickerNoCut：切点那一帧的差分天然极大（实测 max 60+），
+ * 所以"6 镜的片子"flicker 必然高于"1 镜到底"，跟画面稳不稳没关系。
+ * 用它排序会系统性压分多镜头候选。所有排序口径都应改用 flickerNoCut。
  */
 export function videoMetrics(videoPath) {
   const bin = ffmpegBin();
@@ -398,6 +407,14 @@ export function videoMetrics(videoPath) {
     out.samples = diffs.length;
   }
 
+  // 逐帧 (时间, 差分) —— metadata=print 每帧一个块，pts_time 在前、YAVG 在后，按出现顺序配对
+  const diffPairs = [];
+  for (const block of String(diffRun.stdout || '').split(/frame:/).slice(1)) {
+    const t = block.match(/pts_time:([\d.]+)/);
+    const y = block.match(/lavfi\.signalstats\.YAVG=([\d.]+)/);
+    if (t && y) diffPairs.push({ t: +t[1], d: +y[1] });
+  }
+
   // 黑帧
   const blackRun = spawnSync(bin, ['-i', videoPath, '-vf', 'blackdetect=d=0.08:pix_th=0.10', '-f', 'null', '-'], {
     encoding: 'utf8', timeout: 180000,
@@ -409,6 +426,24 @@ export function videoMetrics(videoPath) {
     '-i', videoPath, '-an', '-vf', "select='gt(scene,0.4)',metadata=print:file=-", '-f', 'null', '-',
   ], { encoding: 'utf8', timeout: 180000, maxBuffer: 64 * 1024 * 1024 });
   out.cuts = [...String(cutRun.stdout || '').matchAll(/lavfi\.scene_score=/g)].length;
+  const cutTimes = [...String(cutRun.stdout || '').matchAll(/pts_time:([\d.]+)/g)].map((m) => +m[1]);
+  out.cutTimes = cutTimes.map((t) => +t.toFixed(3));
+
+  // 剔除切点前后 2 帧再算一次 —— 跨镜头数比较只能用这个口径
+  if (diffPairs.length && out.flicker != null) {
+    const fps = out.fps || 24;
+    const guard = (2 / fps) + 1e-6;
+    const near = (t) => cutTimes.some((c) => Math.abs(t - c) <= guard);
+    const kept = diffPairs.filter((p) => !near(p.t)).map((p) => p.d);
+    if (kept.length >= Math.min(8, diffPairs.length / 2)) {
+      out.flickerNoCut = +(kept.reduce((s, v) => s + v, 0) / kept.length).toFixed(3);
+      out.flickerSamplesNoCut = kept.length;
+    } else {
+      out.flickerNoCut = null; // 切点太密，剔完没剩多少帧 —— 如实说"算不出来"
+    }
+  } else if (out.flicker != null) {
+    out.flickerNoCut = out.flicker; // 解析不到逐帧时间戳时退化：没有切点信息可剔
+  }
 
   // 音量（有音轨时）
   if (out.hasAudio) {
@@ -418,8 +453,10 @@ export function videoMetrics(videoPath) {
   }
 
   // 排序分：闪 + 黑帧 + 音量过低 都要扣；切点不算错（分镜本来就有切）
-  const f = out.flicker ?? 99;
+  // 用 flickerNoCut 而不是 flicker —— 否则多镜头候选会被系统性压分
+  const f = out.flickerNoCut ?? out.flicker ?? 99;
   out.score = +(f + (out.blackRuns || 0) * 5 + (out.hasAudio && (out.loudnessDb ?? 0) < -40 ? 3 : 0)).toFixed(3);
+  out.scoreBasis = out.flickerNoCut != null ? 'flickerNoCut' : 'flicker';
   return out;
 }
 

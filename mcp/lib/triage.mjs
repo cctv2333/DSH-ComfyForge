@@ -10,8 +10,10 @@ import { basename, join } from 'node:path';
 import { OUTPUT_DIR, PROJECT_ROOT } from './comfy.mjs';
 import { metrics } from './img.mjs';
 import { readPicks } from './picks.mjs';
+import { probeDuration } from './video.mjs';
 
 const IMG_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp']);
+const VID_EXT = new Set(['.mp4', '.webm', '.mkv', '.mov']);
 
 const RULES = {
   minSide: 256,       // 小于这个边长视为「太小」
@@ -19,6 +21,9 @@ const RULES = {
   flatEntropy: 3.0,   // 直方图熵低于此 → 无内容
   blurLap512: 5.0,    // 归一化锐度低于此 → 死糊
   dupDistance: 2,     // 均值哈希汉明距离 <= 此值视为重复
+  // 视频：没有"锐度/纯色"这种便宜判据，只判硬缺陷（大小、时长、读不出）
+  minBytes: 100 * 1024,
+  minSeconds: 0.8,
 };
 
 function hamming(a, b) {
@@ -38,28 +43,49 @@ export function resolveDir(dir) {
   return join(OUTPUT_DIR, dir);
 }
 
-function listImages(dir) {
+const extOf = (f) => f.slice(f.lastIndexOf('.')).toLowerCase();
+const isVideo = (f) => VID_EXT.has(extOf(f));
+
+/** 列出目录下所有可淘汰的媒体文件（图片 + 视频） */
+function listMedia(dir) {
   if (!existsSync(dir)) throw new Error(`目录不存在：${dir}`);
   return readdirSync(dir)
-    .filter((f) => IMG_EXT.has(f.slice(f.lastIndexOf('.')).toLowerCase()))
+    .filter((f) => IMG_EXT.has(extOf(f)) || VID_EXT.has(extOf(f)))
     .map((f) => join(dir, f))
     .filter((p) => statSync(p).isFile());
 }
 
 /** 只读扫描：给出「建议淘汰」和「建议保留」，不改动任何文件 */
 export function scan(dir) {
-  const files = listImages(dir);
+  const files = listMedia(dir);
   const rows = [];
   for (const p of files) {
+    const kind = isVideo(p) ? 'video' : 'image';
+    if (kind === 'video') {
+      let sizeBytes = 0;
+      try { sizeBytes = statSync(p).size; } catch { /* ignore */ }
+      let duration = null;
+      try { duration = probeDuration(p); } catch { duration = null; }
+      rows.push({ path: p, file: basename(p), kind, m: { sizeBytes, duration }, reasons: [] });
+      continue;
+    }
     try {
       const m = metrics([p])[0];
-      rows.push({ path: p, file: basename(p), m, reasons: [] });
+      rows.push({ path: p, file: basename(p), kind, m, reasons: [] });
     } catch (e) {
-      rows.push({ path: p, file: basename(p), m: null, reasons: ['unreadable: ' + e.message.slice(0, 80)] });
+      rows.push({ path: p, file: basename(p), kind, m: null, reasons: ['unreadable: ' + e.message.slice(0, 80)] });
     }
   }
 
   for (const r of rows) {
+    if (r.kind === 'video') {
+      const m = r.m || {};
+      if (!m.sizeBytes) { r.reasons.push('unreadable: 文件为空或读不到'); continue; }
+      if (m.sizeBytes < RULES.minBytes) r.reasons.push(`too small (${Math.round(m.sizeBytes / 1024)}KB)`);
+      if (m.duration == null) { r.reasons.push('unreadable: 读不出时长（ffmpeg 不在或文件损坏）'); continue; }
+      if (m.duration < RULES.minSeconds) r.reasons.push(`too short (${m.duration}s)`);
+      continue;
+    }
     const m = r.m;
     if (!m) continue;
     if (Math.min(m.width, m.height) < RULES.minSide) r.reasons.push(`too small (${m.width}x${m.height})`);
@@ -95,9 +121,18 @@ export function scan(dir) {
   const kept = rows.filter((r) => !r.reasons.length);
   return {
     dir, total: rows.length,
-    rejected: rejected.map((r) => ({ file: r.file, reasons: r.reasons, protected: !!r.protected, metrics: r.m ? { w: r.m.width, h: r.m.height, lap512: r.m.lap_var_512, contrast: r.m.contrast } : null })),
+    rejected: rejected.map((r) => ({
+      file: r.file,
+      kind: r.kind,
+      reasons: r.reasons,
+      protected: !!r.protected,
+      metrics: r.kind === 'video'
+        ? { duration: r.m?.duration, sizeKB: r.m?.sizeBytes ? Math.round(r.m.sizeBytes / 1024) : null }
+        : (r.m ? { w: r.m.width, h: r.m.height, lap512: r.m.lap_var_512, contrast: r.m.contrast } : null),
+    })),
     kept: kept.map((r) => r.file),
     rules: RULES,
+    note: '视频只判硬缺陷（大小/时长/读不出）；「好不好看」不在本工具的判据里。',
   };
 }
 

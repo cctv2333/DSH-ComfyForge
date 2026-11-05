@@ -120,6 +120,49 @@ function scanModels(comfyRoot, dir, match) {
 }
 
 /**
+ * 权重来源与许可。
+ *
+ * 为什么不写进每个 CAPABILITIES 条目：
+ *   同一个文件会被多项能力共用（clip_l 被 4 个 flux 模板共用），写在能力里会重复三遍、改一处漏两处。
+ *   这里按「文件名正则 → 来源」单独一张表，报告时再挂上去。
+ *
+ * 为什么有的写"来源未知"：
+ *   那些是社区微调/合并模型（Civitai 上常见），原始发布页随时会变、也各有各的许可。
+ *   编一个看起来很确定的仓库地址比留空更坏——人会照着去下，下错了浪费时间还可能许可不对。
+ */
+const SOURCES = [
+  { match: /flux1[-_.]?dev.*\.gguf$/i, kind: 'huggingface', hint: 'city96/FLUX.1-dev-gguf（GGUF 量化版，需 ComfyUI-GGUF 节点）', license: 'FLUX.1 [dev] Non-Commercial License' },
+  { match: /^clip_l\.safetensors$/i, kind: 'huggingface', hint: 'comfyanonymous/flux_text_encoders 里的 clip_l.safetensors', license: '同 FLUX.1 [dev]' },
+  { match: /^t5xxl.*\.safetensors$/i, kind: 'huggingface', hint: 'comfyanonymous/flux_text_encoders 里的 t5xxl_fp16.safetensors（约 9.2GB）', license: 'Apache-2.0（T5）' },
+  { match: /^flux[-_]?ae\.safetensors$/i, kind: 'huggingface', hint: 'black-forest-labs/FLUX.1-dev 里的 ae.safetensors（改名成 flux-ae 即可）', license: 'FLUX.1 [dev] Non-Commercial License' },
+  { match: /qwen3vl.*minimax/i, kind: 'unknown', hint: '随 MiniMax H3 发布的文本编码器；来源需按发行方说明获取', license: '随模型发行方的许可' },
+  { match: /minimax[_-]?h3/i, kind: 'unknown', hint: 'MiniMax H3 主模型（int8 约 19.5GB）；来源需按发行方说明获取', license: '随模型发行方的许可（商用需确认）' },
+  { match: /latent_upscaler_3d/i, kind: 'unknown', hint: 'H3 学习型 3D latent 放大器（约 0.64GB）；随相关节点包/模型集分发', license: '随发行方' },
+  { match: /taomate/i, kind: 'unknown', hint: 'H3 加速 LoRA（3 步）；社区发布，来源需人工确认', license: '随发布者' },
+  { match: /illustrious/i, kind: 'civitai', hint: 'Illustrious 系动漫底模（Civitai/HF 均有大量衍生版）', license: '因发布者而异，需自行核对' },
+  { match: /sd15|sd_1|hassaku|v1-5|anything/i, kind: 'civitai', hint: 'SD1.5 系底模（Civitai/HF 均有）', license: '因发布者而异，需自行核对' },
+];
+
+function sourceFor(fileName) {
+  const hit = SOURCES.find((s) => s.match.test(fileName || ''));
+  return hit ? { kind: hit.kind, hint: hit.hint, license: hit.license } : { kind: 'unknown', hint: '未登记来源', license: '未知' };
+}
+
+/**
+ * 体积校验：只按文件名判断"在不在"是不够的。
+ * 0 字节占位文件、下到一半的残文件都会"通过"，然后提交时报一堆看不懂的 node_errors。
+ * 默认容差 ±15%（量化版本之间体积差异正常），可用 sizeTolerance 覆盖。
+ */
+function sizeOk(found, expectGb, tol = 0.15) {
+  if (!expectGb || !found) return { ok: true, why: '' };
+  const lo = expectGb * (1 - tol);
+  if (found.sizeGb < lo) {
+    return { ok: false, why: `文件存在但只有 ${found.sizeGb}GB（应约 ${expectGb}GB）——很可能没下完或是占位文件` };
+  }
+  return { ok: true, why: '' };
+}
+
+/**
  * 逐项检查。
  * @param {object} o
  * @param {Set<string>|null} o.nodes  /object_info 的节点名集合（null = ComfyUI 没连上）
@@ -153,16 +196,24 @@ export function checkRequirements({ nodes, comfyRoot, hasBin } = {}) {
         if (nodes === null) warns.push({ kind: 'unknown', what: `无法确认 ${m.role}（既没连上 ComfyUI，也不知道 COMFY_ROOT）` });
         continue;
       }
-      const hit = found.length >= (m.minCount || 1);
+      const need = m.minCount || 1;
+      // 先按体积筛一遍：文件名对但体积不对的，不能算"有"
+      const usable = found.filter((f) => sizeOk(f, m.sizeGb, m.sizeTolerance).ok);
+      const hit = usable.length >= need;
+      const tooSmall = found.filter((f) => !sizeOk(f, m.sizeGb, m.sizeTolerance).ok);
+      const src = sourceFor(found[0]?.name || (m.match.source || ''));
+
       if (!hit && m.required !== false) {
-        missing.push({
-          kind: 'model',
-          what: `${m.role}（约 ${m.sizeGb}GB）`,
-          how: `放进 models/${m.dir}/，文件名要能匹配 ${m.match}`,
-        });
+        const how = tooSmall.length
+          ? `models/${m.dir}/ 里有同名文件但体积不符：${tooSmall.map((f) => `${f.name}（${f.sizeGb}GB）`).join('、')}`
+            + `。应约 ${m.sizeGb}GB —— 重新下载或换等价物`
+          : `放进 models/${m.dir}/，文件名要能匹配 ${m.match}`;
+        missing.push({ kind: 'model', what: `${m.role}（约 ${m.sizeGb}GB）`, how, source: src, actual: tooSmall.length ? tooSmall : undefined });
       } else if (!hit) {
-        warns.push({ kind: 'optional', what: `${m.role} 未安装（可选，约 ${m.sizeGb}GB）` });
+        warns.push({ kind: 'optional', what: `${m.role} 未安装（可选，约 ${m.sizeGb}GB）`, source: src });
       }
+      // 注意：**有可用候选时不再报"另有体积异常的文件"**。
+      // 同一个 checkpoints/ 里并存 SD1.5 与 SDXL 是正常的，拿同一个期望体积去量所有文件会天天报假警报。
     }
 
     for (const b of cap.needs.bins || []) {
