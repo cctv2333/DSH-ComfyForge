@@ -207,6 +207,33 @@ const pythonRes = pick({
   validate: (v) => existsSync(v) || !v.includes('/'),
 });
 
+/**
+ * ffmpeg 位置。
+ *
+ * 2026-11-07 的教训：为了去掉写死的 `D:\vidlens\...\ffmpeg.exe`，
+ * 我先把它改成了"只查 PATH"，结果这台机器上 PATH 里根本没有 ffmpeg ——
+ * 抽帧/度量全部 spawnSync ENOENT。**去硬编码不等于只靠 PATH。**
+ *
+ * 正确分层：机器相关的值放**本地配置文件**（comfyforge.config.json，已在 .gitignore），
+ * 源码里只留探测顺序与报错。
+ */
+function autodetectFfmpeg(root) {
+  const exe = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
+  const cands = [
+    join(PROJECT_ROOT, 'tools', 'bin', exe),
+    root ? join(root, '..', exe) : '',
+    root ? join(root, '..', 'ffmpeg', 'bin', exe) : '',
+  ].filter(Boolean);
+  return cands.find((p) => existsSync(p)) || null;
+}
+
+const ffmpegRes = pick({
+  field: 'ffmpegPath',
+  envVar: 'FFMPEG_PATH',
+  auto: () => autodetectFfmpeg(comfyRoot),
+  fallback: 'ffmpeg', // 交给 PATH；真没有时由调用方给出可读的报错
+});
+
 const urlRes = pick({
   field: 'comfyUrl',
   envVar: 'COMFY_URL',
@@ -237,6 +264,7 @@ export const COMFY_ROOT = comfyRoot;
 export const OUTPUT_DIR = outputRes.value;
 export const LOG_PATH = logRes.value;
 export const PYTHON = pythonRes.value;
+export const FFMPEG = ffmpegRes.value;
 export const POLL_MS = pollRes.value;
 export const NOT_QUEUED_GRACE_MS = graceRes.value;
 

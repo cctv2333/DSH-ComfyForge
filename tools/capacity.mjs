@@ -46,13 +46,15 @@ const PROFILES = {
     minRamFreeGB: 4,
     hardRamFreeGB: 1.5,
     minVramFreeGB: 1.5,
-    // 实测基线（2026-11-07，显存空闲 6.85GB）：124 帧 + 1 个二采块 = **273 秒**
-    // 反例（2026-11-06，commit 只剩 6GB）：同规模跑了 3 小时 20 分 ≈ 73 倍。
-    // 所以基线按"资源充裕"给，资源不够时由 verdict/提示去放大，不要把最坏情况当默认。
+    // 实测基线（2026-11-07，显存空闲 2.5–6.9GB）：
+    //   124 帧 / 1 块  = 273 秒（5 秒小样）
+    //   362 帧 / 3 块  = 763 秒（15 秒，splitStep 8）
+    //   362 帧 / 3 块  = 572 秒（15 秒，splitStep 10 —— 二采少两步，快 25%）
+    // 反例（2026-11-06，commit 只剩 6GB）：同规模跑了 3 小时 20 分 ≈ 15 倍。
     estimate: (s) => {
       const frames = Math.ceil(s * FPS / 17) * 17 + 5;
       const chunks = frames <= CHUNK ? 1 : 1 + Math.ceil((frames - CHUNK) / (CHUNK - OVERLAP));
-      const minutes = Math.max(1, Math.round(frames * 0.037 + (chunks - 1) * 3));
+      const minutes = Math.max(1, Math.round(frames * 0.03 + (chunks - 1) * 1.5));
       return { frames, chunks, minutes };
     },
   },

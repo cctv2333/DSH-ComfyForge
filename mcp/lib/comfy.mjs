@@ -7,13 +7,13 @@ import { join } from 'node:path';
 
 import {
   BASE, POLL_MS, NOT_QUEUED_GRACE_MS, COMFY_ROOT, OUTPUT_DIR, LOG_PATH,
-  PROJECT_ROOT, CACHE_DIR, WORKFLOW_DIR, RUNS_DIR, MODE,
+  PROJECT_ROOT, CACHE_DIR, WORKFLOW_DIR, RUNS_DIR, MODE, FFMPEG,
 } from './config.mjs';
 import { QueuePresenceCache, MissingTaskTracker } from './comfypolling.mjs';
 
 export {
   BASE, POLL_MS, NOT_QUEUED_GRACE_MS, COMFY_ROOT, OUTPUT_DIR, LOG_PATH,
-  PROJECT_ROOT, CACHE_DIR, WORKFLOW_DIR, RUNS_DIR, MODE,
+  PROJECT_ROOT, CACHE_DIR, WORKFLOW_DIR, RUNS_DIR, MODE, FFMPEG,
 };
 
 export class ComfyError extends Error {
