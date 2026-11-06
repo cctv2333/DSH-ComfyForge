@@ -15,6 +15,9 @@ import { analyzeModelSlots, findModelSlots } from '../lib/modelslots.mjs';
 import { extractTypes } from '../lib/workflowcheck.mjs';
 import { guessFamily, profileFor } from '../lib/models.mjs';
 import { scan as triageScan } from '../lib/triage.mjs';
+import { presenceFromQueue, QueuePresenceCache, MissingTaskTracker, MISSING_TASK_POLICY } from '../lib/comfypolling.mjs';
+import { validateH3Prompt, splitSections, formatH3Problems, FIELDS_FULL, FIELDS_BASE } from '../lib/h3protocol.mjs';
+import { readReferenceImageOrders, resolvePictureNumbers } from '../lib/h3refs.mjs';
 
 let pass = 0, fail = 0;
 const ok = (name, cond, extra = '') => {
@@ -136,6 +139,154 @@ console.log('== 8. 二采默认路径（2026-11-06 实炸过一次，防回归�
   ok('默认不含独立调度节点 30', wf['30'] === undefined);
   const risky = buildH3Pass2Workflow({ image: 'x.png', prompt: 't', width: 320, height: 320, length: 124, seed: 1, refineDenoise: 0.35 });
   ok('显式 refine 时给出音频风险警告', typeof risky.meta.audioRisk === 'string' && risky.meta.audioRisk.length > 10);
+}
+
+console.log('\n== 9. /queue 在场信息：「缺席 ≠ 失败」 ==');
+{
+  const q = {
+    queue_running: [[0, 'run-1', {}, { client_id: 'c1' }, []]],
+    queue_pending: [[1, 'pend-1', {}, {}, []], [2, 'pend-2', {}, {}, []]],
+  };
+  const p = presenceFromQueue(q);
+  ok('/queue 只留 id 与状态', p.valid && p.runningIds.has('run-1') && p.pendingIds.size === 2, JSON.stringify([...p.pendingIds]));
+  ok('待跑顺序保序', JSON.stringify(p.pendingOrder) === '["pend-1","pend-2"]', JSON.stringify(p.pendingOrder));
+  ok('client_id → 任务id 映射', p.taskIdByClient.get('c1') === 'run-1');
+  ok('坏行判为无效快照', presenceFromQueue({ queue_running: [[0]], queue_pending: [] }).valid === false);
+
+  // 缓存：同一 scope 的一次读取被共享（并发 3 次只发 1 个请求）
+  let loads = 0;
+  const cache = new QueuePresenceCache();
+  const load = async () => { loads++; await new Promise((r) => setTimeout(r, 10)); return q; };
+  const [a, b, c] = await Promise.all([cache.get('s', load), cache.get('s', load), cache.get('s', load)]);
+  ok('并发读取只发一次请求', loads === 1, String(loads));
+  ok('共享同一份结果', a === b && b === c && a.observationId > 0);
+
+  const tr = new MissingTaskTracker();
+  const now = Date.now();
+  const fresh = { valid: true, observationId: 1 };
+  ok('任务还年轻 → 不下结论', tr.observe('t1', now - 60_000, fresh, now) === false);
+  // 有效观测 6 次、跨度 2 分钟、任务已 40 分钟 → 才判定「它真的不在了」
+  let judged = false;
+  for (let i = 0; i < MISSING_TASK_POLICY.minimumObservations; i += 1) {
+    judged = tr.observe('t2', now - 40 * 60_000, { valid: true, observationId: 10 + i }, now + i * 25_000);
+  }
+  ok('6 次观测 + 2 分钟跨度 → 判为不在', judged === true);
+  // 只有 5 次（跨度够）不该判定
+  let judgedFew = false;
+  for (let i = 0; i < MISSING_TASK_POLICY.minimumObservations - 1; i += 1) {
+    judgedFew = tr.observe('t5', now - 40 * 60_000, { valid: true, observationId: 50 + i }, now + i * 30_000);
+  }
+  ok('观测次数不够 → 不判定', judgedFew === false);
+  const one = { valid: true, observationId: 99 };
+  tr.observe('t3', now - 40 * 60_000, one, now);
+  ok('同一份快照重复观测不重复计数', tr.observe('t3', now - 40 * 60_000, one, now + 60_000) === false);
+  ok('无效快照不计数', tr.observe('t4', now - 40 * 60_000, { valid: false, observationId: 5 }, now) === false);
+}
+
+console.log('\n== 10. H3 提示词结构校验（官方协议） ==');
+{
+  const base = [
+    'integrated_multimodal_description: [Shot 1] Live-action, cinematic, a woman (S1) says: <d>[English] Hi.</d> [Shot 2] At 00:03.000, the shot cuts to a close-up.',
+    'overall_soundscape: Rain taps the window while room tone continues underneath.',
+    'non_diegetic_music: N/A',
+  ].join('\n\n');
+  const r1 = validateH3Prompt(base);
+  ok('三段式：字段与顺序正确', r1.mode === 'base' && r1.ok, JSON.stringify(r1.problems));
+  ok('切点解析成秒', JSON.stringify(r1.shots.map((s) => s.at)) === '[null,3]', JSON.stringify(r1.shots));
+
+  const full = [
+    'subject_definitions:',
+    '<Subject 1> is the woman in <Picture 1>.',
+    '',
+    'summary:',
+    '[reference generation] The target video shows <Subject 1> walking.',
+    '',
+    'retention_analysis:',
+    '<Subject 1> (appears in [Shot 1]): fully_preserved - identity retained.',
+    '',
+    'detailed_description:',
+    '[Shot 1] The shot begins from <Picture 1>, <Subject 1> (S1) says: <d>[English] Hello.</d>',
+    '',
+    'overall_soundscape: Quiet room tone.',
+    '',
+    'non_diegetic_music: Sparse piano at a slow tempo.',
+  ].join('\n');
+  const r2 = validateH3Prompt(full);
+  ok('六段式：字段、标签、retention 全对', r2.mode === 'full' && r2.ok, JSON.stringify(r2.problems));
+  ok('段落切分保留顺序', JSON.stringify(splitSections(full).map((s) => s.name)) === JSON.stringify(FIELDS_FULL));
+
+  const has = (res, code) => res.problems.some((p) => p.code === code);
+  ok('负向字段 → 报错', has(validateH3Prompt(`negative_prompt: bad\n${base}`), 'negative'));
+  ok('首镜带时间码 → 报错', has(validateH3Prompt(base.replace('[Shot 1] Live-action', '[Shot 1] At 00:01.000, Live-action')), 'shot1-at'));
+  ok('第二镜切到 0 秒（与首镜同时）→ 报错', has(validateH3Prompt(base.replace('At 00:03.000', 'At 00:00.000')), 'cut-order'));
+  ok('三镜里第二镜倒退 → 报错', has(validateH3Prompt(
+    'integrated_multimodal_description: [Shot 1] a. [Shot 2] At 00:05.000, b. [Shot 3] At 00:03.000, c.\n\noverall_soundscape: x.\n\nnon_diegetic_music: N/A',
+  ), 'cut-order'));
+  ok('<d> 未闭合 → 报错', has(validateH3Prompt(base.replace('</d>', '')), 'dialogue-unclosed'));
+  ok('字段顺序错 → 报错', has(validateH3Prompt(base.split('\n\n').reverse().join('\n\n')), 'fields'));
+  ok('引用未定义标签 → 报错', has(validateH3Prompt(full.replace('shows <Subject 1>', 'shows <Subject 2>')), 'label-undefined'));
+  ok('声源编号乱序 → 报错', has(validateH3Prompt(
+    'integrated_multimodal_description: [Shot 1] a (S2) says: <d>[English] A.</d> [Shot 2] At 00:02.000, b (S1) says: <d>[English] B.</d>\n\noverall_soundscape: x.\n\nnon_diegetic_music: N/A',
+  ), 'speaker-order'));
+  ok('retention 标记不合法 → 报错', has(validateH3Prompt(full.replace('fully_preserved', 'kept')), 'retention-marker'));
+  ok('soundscape 写成逐镜清单 → 告警', has(validateH3Prompt(base.replace('overall_soundscape: Rain taps the window while room tone continues underneath.', 'overall_soundscape: Shot 1 — rain. Shot 2 — bell.')), 'soundscape-per-shot'));
+  ok('配乐写抽象情绪词 → 告警', has(validateH3Prompt(base.replace('Sparse piano at a slow tempo.', 'N/A').replace('N/A', 'A sad emotional piano at a slow tempo.')), 'music-mood'));
+  ok('问题清单渲染带位置不带正文', formatH3Problems(validateH3Prompt('negative: x').problems).includes('[error]'));
+
+  // 空输入与 NaN 边界
+  ok('空提示词 → 报错而不是崩', validateH3Prompt('').ok === false);
+  ok('校验器不因缺 durationSec 崩', validateH3Prompt(base, {}).ok === true);
+}
+
+console.log('\n== 11. <Picture n> 编号从图里推导 ==');
+{
+  const i2v = {
+    5: { class_type: 'LoadImage', inputs: { image: 'front.png' } },
+    17: { class_type: 'LoadImage', inputs: { image: 'last.png' } },
+    6: { class_type: 'MiniMaxH3ImageToVideo', inputs: { first_frame: ['5', 0], last_frame: ['17', 0] } },
+  };
+  const orders = readReferenceImageOrders(i2v);
+  ok('图生视频读到 2 张参考图', orders.length === 1 && orders[0].images.length === 2, JSON.stringify(orders));
+  ok('顺序 = first_frame, last_frame', orders[0].images.map((i) => i.inputName).join(',') === 'first_frame,last_frame');
+  ok('编号 1,2', JSON.stringify(resolvePictureNumbers(orders, [0, 1])) === '[1,2]');
+
+  const r2v = {
+    8: { class_type: 'LoadImage', inputs: { image: 'a.png' } },
+    18: { class_type: 'LoadImage', inputs: { image: 'b.png' } },
+    9: {
+      class_type: 'MiniMaxH3ReferenceToVideo',
+      inputs: { 'ref_images.ref_image_0': ['8', 0], 'ref_images.ref_image_1': ['18', 0] },
+    },
+  };
+  const o2 = readReferenceImageOrders(r2v);
+  ok('全参考读到 2 张', o2[0].images.length === 2, JSON.stringify(o2[0].images.map((i) => i.inputName)));
+  ok('编号按 ref_image_N 顺序', JSON.stringify(resolvePictureNumbers(o2, [0, 1])) === '[1,2]');
+  ok('只选第 2 张 → 编号 2', JSON.stringify(resolvePictureNumbers(o2, [1])) === '[2]');
+
+  // 经过单图操作仍能追到 LoadImage
+  const chained = {
+    8: { class_type: 'LoadImage', inputs: { image: 'a.png' } },
+    30: { class_type: 'ImageScale', inputs: { image: ['8', 0] } },
+    9: { class_type: 'MiniMaxH3ReferenceToVideo', inputs: { 'ref_images.ref_image_0': ['30', 0] } },
+  };
+  ok('穿过单图操作追到源', JSON.stringify(resolvePictureNumbers(readReferenceImageOrders(chained), [0])) === '[1]');
+
+  // 未知节点（开关/批量）→ 不猜
+  const unknown = {
+    40: { class_type: 'SomeSwitch', inputs: {} },
+    9: { class_type: 'MiniMaxH3ReferenceToVideo', inputs: { 'ref_images.ref_image_0': ['40', 0] } },
+  };
+  ok('来源不确定 → undefined（不猜）', resolvePictureNumbers(readReferenceImageOrders(unknown), [0]) === undefined);
+
+  // 同一张图喂两个槽 → 编号不唯一
+  const dup = {
+    5: { class_type: 'LoadImage', inputs: { image: 'same.png' } },
+    6: { class_type: 'MiniMaxH3ImageToVideo', inputs: { first_frame: ['5', 0], last_frame: ['5', 0] } },
+  };
+  ok('一图两用 → undefined', resolvePictureNumbers(readReferenceImageOrders(dup), [0, 1]) === undefined);
+
+  ok('空选择 → 空数组', JSON.stringify(resolvePictureNumbers(orders, [])) === '[]');
+  ok('槽位越界 → undefined', resolvePictureNumbers(orders, [5]) === undefined);
 }
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

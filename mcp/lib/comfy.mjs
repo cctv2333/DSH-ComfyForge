@@ -9,6 +9,7 @@ import {
   BASE, POLL_MS, NOT_QUEUED_GRACE_MS, COMFY_ROOT, OUTPUT_DIR, LOG_PATH,
   PROJECT_ROOT, CACHE_DIR, WORKFLOW_DIR, RUNS_DIR, MODE,
 } from './config.mjs';
+import { QueuePresenceCache, MissingTaskTracker } from './comfypolling.mjs';
 
 export {
   BASE, POLL_MS, NOT_QUEUED_GRACE_MS, COMFY_ROOT, OUTPUT_DIR, LOG_PATH,
@@ -59,6 +60,30 @@ function truncate(s, n) { return typeof s === 'string' && s.length > n ? s.slice
 
 export async function systemStats() { return get('/system_stats', 10_000); }
 export async function queueState() { return get('/queue', 10_000); }
+
+// ── /queue 的在场信息 ────────────────────────────────────────────────────────
+// 不返回工作流内容，只返回 id 与状态；同一时刻只发一次读取，其余调用共享（1s TTL）。
+const _queueCache = new QueuePresenceCache();
+const _missingTracker = new MissingTaskTracker();
+const _firstSeen = new Map();
+
+/** /queue 的在场信息（去重 + TTL）。只给 id 与状态，不带几 MB 的工作流。 */
+export function queuePresence(ttlMs = 1000) {
+  return _queueCache.get(BASE, () => get('/queue', 10_000), ttlMs);
+}
+
+/** 记下「最早一次看见这个任务」的时刻，供缺席判定算任务年龄 */
+export function noteTaskSeen(promptId, at = Date.now()) {
+  if (!promptId) return;
+  const prev = _firstSeen.get(promptId);
+  if (prev === undefined || at < prev) _firstSeen.set(promptId, at);
+  // 长跑进程不该无限记住旧 id：超过 2 小时且超过 500 条就清一批
+  if (_firstSeen.size > 500) {
+    const cutoff = Date.now() - 2 * 3_600_000;
+    for (const [id, t] of _firstSeen) if (t < cutoff) _firstSeen.delete(id);
+  }
+}
+
 export async function history(id) { return get('/history/' + encodeURIComponent(id), 15_000); }
 export async function recentHistory(maxItems = 32) { return get(`/history?max_items=${maxItems}`, 20_000); }
 
@@ -221,38 +246,60 @@ export function parseHistoryEntry(entry) {
 
 /**
  * 等一个 prompt 完成。
- * 关键：不抛「超时」异常，而是返回 { pending: true } —— 因为 MCP 客户端（含 DSH）
- * 对单次工具调用通常只有 ~60s 的超时，服务器端必须主动把长任务切成「一次等一小段」，
- * 由 agent 反复调用。v0.1 的 300s 阻塞等待在这种客户端下必然表现为「调用失败」。
+ *
+ * 两条规则：
+ * 1. 不抛「超时」，返回 { pending: true } —— MCP 客户端单次调用只有 ~60s，
+ *    长任务必须切成「一次等一小段」由 agent 反复调。
+ * 2. **缺席不等于失败**。任务从队列里消失可能是刚跑完还没写 history、界面重连、
+ *    快照过期。只有「从没出现过 + 过了宽限期」（多半 id 写错）才报错；
+ *    「出现过又不见了」按保守判据继续等，等不到就返回 notObserved 而不是抛错。
  */
-export async function waitFor(promptId, { timeoutS = 45, pollMs = POLL_MS } = {}) {
+export async function waitFor(promptId, { timeoutS = 45, pollMs = POLL_MS, submittedAt } = {}) {
   const t0 = Date.now();
   const limit = timeoutS * 1000;
-  let sawQueued = false;
+  // 任务年龄从「最早一次看见它」算起；调用方知道真实提交时刻就传进来
+  if (submittedAt) noteTaskSeen(promptId, submittedAt);
+  noteTaskSeen(promptId, t0);
+  let everQueued = false;
   for (;;) {
     const { entry } = await historyResolved(promptId);
     if (entry?.status?.status_str) return { entry, elapsedMs: Date.now() - t0, pending: false };
 
-    if (!sawQueued) {
-      const q = await queueState();
-      sawQueued = [...(q.queue_running || []), ...(q.queue_pending || [])].some((x) => x[1] === promptId);
+    const presence = await queuePresence();
+    const inQueue = presence.runningIds.has(promptId) || presence.pendingIds.has(promptId);
+    if (inQueue) {
+      everQueued = true;
+      _missingTracker.reset(promptId);
+    } else if (presence.valid) {
+      // 从来没在队列里出现过，且过了宽限期：基本就是 id 错了 / 没提交成功
+      if (!everQueued && Date.now() - t0 > NOT_QUEUED_GRACE_MS) {
+        throw new ComfyError(
+          `prompt_id ${promptId} 既不在队列里也不在 history 里——可能被 ComfyUI 重启清空，或 id 写错了。`,
+          { kind: 'timeout' },
+        );
+      }
+      // 出现过又不见了（或还在宽限期内）：不判失败，按保守判据继续观察
+      const firstSeen = _firstSeen.get(promptId) ?? t0;
+      if (_missingTracker.observe(promptId, firstSeen, presence)) {
+        return {
+          pending: true,
+          notObserved: true,
+          elapsedMs: Date.now() - t0,
+          note: '任务已连续多次不在队列快照里，且年龄超过 30 分钟；本地无法再确认它是否还在跑。'
+            + '可以再等一会儿，或去 ComfyUI 界面/日志核对——这不等于执行失败。',
+        };
+      }
     }
+
     const now = Date.now() - t0;
-    if (!sawQueued && now > NOT_QUEUED_GRACE_MS) {
-      throw new ComfyError(
-        `prompt_id ${promptId} 既不在队列里也不在 history 里——可能被 ComfyUI 重启清空，或 id 写错了。`,
-        { kind: 'timeout' },
-      );
-    }
     if (now > limit) {
-      const q = await queueState();
-      const idx = (q.queue_pending || []).findIndex((x) => x[1] === promptId);
+      const idx = presence.pendingOrder.indexOf(promptId);
       return {
         pending: true,
         elapsedMs: now,
         queue: {
-          running: (q.queue_running || []).length,
-          pending: (q.queue_pending || []).length,
+          running: presence.runningIds.size,
+          pending: presence.pendingIds.size,
           position: idx >= 0 ? idx + 1 : 0,
         },
       };

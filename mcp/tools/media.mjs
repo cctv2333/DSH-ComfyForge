@@ -29,7 +29,8 @@ import {
   listWorkflows, inspectWorkflow, installedPacks, classifyNodes, renderWorkflowDoc, writeDoc, workflowDir,
 } from '../lib/workflows.mjs';
 import { checkWorkflows, formatReport } from '../lib/workflowcheck.mjs';
-import { startVideo, videoStatus, framesFor, extractFrames, makeVideoSheet, videoMetrics } from '../lib/video.mjs';
+import { startVideo, videoStatus, framesFor, extractFrames, makeVideoSheet, videoMetrics, H3PromptCheckError } from '../lib/video.mjs';
+import { formatH3Problems } from '../lib/h3protocol.mjs';
 import { lintPrompt, lintWithLLM, readPromptFile } from '../lib/promptlint.mjs';
 import * as C from './ctx.mjs';
 // 工具体内用的是裸名，这里把共享上下文给齐
@@ -67,6 +68,7 @@ server.tool(
     wait_s: z.number().optional().describe('status 时本次最多等几秒，默认 45'),
     video: z.string().optional().describe('frames/sheet/metrics 用：本地绝对路径，或 output 里的相对路径'),
     times: z.array(z.number()).optional().describe('frames 用：要抽的秒数列表，默认 [1,3,5]'),
+    allow_invalid_prompt: z.boolean().optional().describe('start 用：跳过 H3 提示词结构校验（默认 false）。只用于复刻旧稿/对照实验；结构坏了 ComfyUI 不会报错，只会跑偏'),
   },
   async (a) => {
     try {
@@ -81,7 +83,9 @@ server.tool(
           return fail(`input 目录里没有 ${a.image}`, { inputDir: inputDir(), candidates: cands });
         }
         const { frames, seconds } = framesFor(a.seconds ?? 5);
-        const started = await startVideo({
+        let started;
+        try {
+          started = await startVideo({
           mode,
           image: a.image, prompt: a.prompt,
           width: a.width ?? (mode === '2pass' ? 608 : 1280),
@@ -101,7 +105,21 @@ server.tool(
           upscalerPrecision: a.upscaler_precision ?? 'fp16',
           seed: a.seed ?? Math.floor(Math.random() * 1e9),
           prefix: a.prefix ?? 'comfyforge/video',
-        });
+          allowInvalidPrompt: a.allow_invalid_prompt === true,
+          });
+        } catch (e) {
+          // 结构不合格时不提交，把问题清单直接给 agent 自己改
+          if (e instanceof H3PromptCheckError) {
+            return fail(`提示词结构没通过，已拦在提交前（**没有发起执行**）：\n${formatH3Problems(e.problems)}`, {
+              mode: e.mode,
+              problems: e.problems,
+              hint: '按官方规范改：字段名与顺序固定、首镜不写时间码、后续 At MM:SS.mmm 严格递增、<d> 成对、'
+                + '声源按首次发声顺序 (S1)(S2)…、参考标签必须先定义、不得出现 negative 字段。'
+                + '确实要照旧提交就传 allow_invalid_prompt=true。',
+            });
+          }
+          throw e;
+        }
         const est = mode === '2pass'
           ? `一采约 ${Math.round(frames * 0.02)} 分钟 + 放大/二采（${started.params.chunkCount} 块）约 ${Math.round(frames * 0.02)} 分钟`
           : `预计 ${Math.round(frames * 0.075)} 分钟左右（本机 4.6 秒/帧）`;

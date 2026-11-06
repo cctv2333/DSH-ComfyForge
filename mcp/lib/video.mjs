@@ -13,8 +13,25 @@ import { spawnSync } from 'node:child_process';
 import {
   OUTPUT_DIR, PROJECT_ROOT, submit, waitFor, parseHistoryEntry, localOutputPath,
 } from './comfy.mjs';
+import { validateH3Prompt, formatH3Problems } from './h3protocol.mjs';
 
 export const FPS = 24;
+
+/**
+ * 提示词结构没通过时抛这个。
+ * 为什么不交给 ComfyUI 报错：POST /prompt 只校验节点/必填/类型，提示词写错它一句话不说，
+ * 只会跑几分钟给你一条跑偏的片子。所以在**提交前**拦住，并且只报结构、不回灌正文。
+ */
+export class H3PromptCheckError extends Error {
+  constructor(result) {
+    const errors = result.problems.filter((p) => p.level === 'error');
+    super(`H3 提示词结构没通过（${errors.length} 项）：\n${formatH3Problems(result.problems)}`);
+    this.name = 'H3PromptCheckError';
+    this.problems = result.problems;
+    this.mode = result.mode;
+  }
+}
+
 
 /** 秒 → H3 合法帧数（5 + 17k），并给出实际时长 */
 export function framesFor(seconds) {
@@ -284,6 +301,18 @@ export function buildH3Pass2Workflow(o) {
  *  mode: 'single'（i2v 单遍）| '2pass'（r2v + 学习型 3D 放大 + 分块二采） */
 export async function startVideo(o) {
   const mode = o.mode ?? 'single';
+
+  // 提交前先过一遍结构校验。拦的是 error 级（结构确定不对），warn 只随结果带回来。
+  // 想跳过：显式传 allowInvalidPrompt: true（用于对照实验/复刻旧稿）。
+  const durationSec = o.seconds ?? (o.length ? o.length / FPS : undefined);
+  const check = validateH3Prompt(o.prompt, { durationSec });
+  if (!check.ok && !o.allowInvalidPrompt) throw new H3PromptCheckError(check);
+  const promptWarnings = check.problems.filter((p) => p.level === 'warn');
+  const promptNote = {
+    promptMode: check.mode,
+    ...(promptWarnings.length ? { promptWarnings: promptWarnings.slice(0, 8).map((p) => `${p.where}：${p.message}`) } : {}),
+  };
+
   if (mode === '2pass') {
     const { frames } = framesFor(o.seconds ?? (o.length / FPS));
     const length = o.length ?? frames;
@@ -296,7 +325,7 @@ export async function startVideo(o) {
       queued: res.number ?? null,
       mode,
       params: {
-        ...meta, frames: length, seconds: +(length / FPS).toFixed(2),
+        ...meta, ...promptNote, frames: length, seconds: +(length / FPS).toFixed(2),
         seed: o.seed ?? 0, chunkCount,
       },
     };
@@ -309,6 +338,7 @@ export async function startVideo(o) {
     queued: res.number ?? null,
     mode: 'single',
     params: {
+      ...promptNote,
       width: o.width ?? 1280, height: o.height ?? 736,
       frames, seconds: +(frames / FPS).toFixed(2), steps: o.steps ?? 8, seed: o.seed ?? 0,
     },
