@@ -97,6 +97,7 @@ const is2pass = mode === '2pass';
       process.exit(4);
     }
     if (cap.verdict === 'red') console.error('\n⚠ 资源不够，但加了 --force，继续（很可能 OOM 或跑几小时）。');
+    if (cap.verdict === 'yellow') console.error('\n⚠ 资源刚好够跑，但会靠页面文件硬扛 —— 实际耗时可能比预计翻倍。');
   }
 }
 // 2pass 的一采分辨率要低（低清抽卡），单遍/多镜沿用高清

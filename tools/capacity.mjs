@@ -42,7 +42,9 @@ const PROFILES = {
     weights: ['h3-unet', 'h3-text-encoder', 'h3-video-vae', 'h3-audio-vae'],
     // 峰值 commit：权重要能被 staged + 激活 + VAE 解码
     minCommitGB: 26,
+    hardCommitGB: 8,     // 低于这条必爆；8–26 之间能跑，但会靠页面文件硬扛 → 很慢
     minRamFreeGB: 4,
+    hardRamFreeGB: 1.5,
     minVramFreeGB: 1.5,
     // 实测基线：一采 362 帧 65 分钟 → 0.18 分/帧；二采每块约 45 分钟
     estimate: (s) => {
@@ -55,7 +57,9 @@ const PROFILES = {
     label: 'H3 单遍（i2v，无放大二采）',
     weights: ['h3-unet', 'h3-text-encoder', 'h3-video-vae', 'h3-audio-vae'],
     minCommitGB: 26,
+    hardCommitGB: 8,
     minRamFreeGB: 4,
+    hardRamFreeGB: 1.5,
     minVramFreeGB: 1.5,
     estimate: (s) => {
       const frames = Math.ceil(s * FPS / 17) * 17 + 5;
@@ -66,7 +70,9 @@ const PROFILES = {
     label: '出图（MOSS / Krea2 / FLUX.2）',
     weights: ['image-unet', 'image-te'],
     minCommitGB: 14,
+    hardCommitGB: 6,
     minRamFreeGB: 2.5,
+    hardRamFreeGB: 1,
     minVramFreeGB: 1.5,
     estimate: () => ({ frames: 0, chunks: 0, minutes: 1 }),
   },
@@ -130,30 +136,40 @@ const weightMB = profile.weights.reduce((s, k) => s + WEIGHTS[k], 0);
 const est = profile.estimate(SECONDS);
 
 const rows = [
-  { name: '物理内存空闲', have: `${ramFreeGB.toFixed(1)} / ${ramTotalGB.toFixed(1)} GB`, need: `≥ ${profile.minRamFreeGB} GB`, ok: ramFreeGB >= profile.minRamFreeGB },
+  {
+    name: '物理内存空闲',
+    have: `${ramFreeGB.toFixed(1)} / ${ramTotalGB.toFixed(1)} GB`,
+    need: `≥ ${profile.minRamFreeGB} GB`,
+    ok: ramFreeGB >= profile.hardRamFreeGB,
+    soft: ramFreeGB >= profile.minRamFreeGB,
+  },
   {
     name: 'Commit 剩余',
     have: commit ? `${commit.freeGB.toFixed(1)} / ${commit.limitGB.toFixed(1)} GB` : '未知',
     need: `≥ ${profile.minCommitGB} GB`,
-    ok: commit ? commit.freeGB >= profile.minCommitGB : null,
+    ok: commit ? commit.freeGB >= profile.hardCommitGB : null,
+    soft: commit ? commit.freeGB >= profile.minCommitGB : null,
   },
   {
     name: '显存空闲',
     have: comfy ? `${comfy.vramFreeGB.toFixed(2)} / ${comfy.vramTotalGB.toFixed(2)} GB` : '连不上 ComfyUI',
     need: `≥ ${profile.minVramFreeGB} GB`,
     ok: comfy ? comfy.vramFreeGB >= profile.minVramFreeGB : false,
+    soft: comfy ? comfy.vramFreeGB >= profile.minVramFreeGB : false,
   },
   {
     name: '权重 / Commit 剩余',
     have: commit ? `${(weightMB / 1024).toFixed(1)} / ${commit.freeGB.toFixed(1)} GB` : `${(weightMB / 1024).toFixed(1)} GB / 未知`,
     need: `权重 ≤ 剩余`,
-    ok: commit ? commit.freeGB * 1024 >= weightMB : null,
+    ok: commit ? commit.freeGB >= 6 : null, // 只要够把最大那个模型分阶段 stream 进来就不算必爆
+    soft: commit ? commit.freeGB * 1024 >= weightMB : null,
   },
 ];
 
 const red = rows.filter((r) => r.ok === false);
 const warn = rows.filter((r) => r.ok === null);
-const verdict = red.length ? 'red' : warn.length ? 'warn' : 'green';
+const yellow = rows.filter((r) => r.ok === true && r.soft === false);
+const verdict = red.length ? 'red' : warn.length ? 'warn' : yellow.length ? 'yellow' : 'green';
 
 if (has('json')) {
   console.log(JSON.stringify({
@@ -178,11 +194,18 @@ if (comfy) console.log(`  ComfyUI ${comfy.version}｜队列 running ${comfy.runn
 console.log(`\n  预计耗时 ${est.minutes} 分钟（基线：一采 0.18 分/帧、二采 45 分/块，2026-11-06 实测）`);
 
 if (verdict === 'red') {
-  console.log('\n结论：**现在别跑**。');
+  console.log('\n结论：**现在别跑**（会 OOM）。');
   console.log('  · Commit 见底是最致命的：H3 要一次性实体化 20 GB 权重，不够就直接 OOM。');
   console.log('  · 最有效的解法：**重启 ComfyUI**（把 staged 的权重还回去），再关掉浏览器里不用的标签。');
-  console.log('  · 重启后重跑这条命令，直到三项都是 ✓ 再开。');
+  console.log('  · 重启后重跑这条命令，直到不再出现 ✗ 再开。');
   process.exit(2);
+}
+if (verdict === 'yellow') {
+  console.log('\n结论：**能跑，但会很慢**（会靠页面文件硬扛，可能比预计时长翻倍）。');
+  for (const r of yellow) console.log(`  · ${r.name} 只有 ${r.have}，舒适线是 ${r.need}`);
+  console.log('  · 想变快：把 Windows 虚拟内存（页面文件）调到 64 GB —— 免费且最直接；');
+  console.log('    或者先跑一个 5 秒小样（1 个二采块），把成本压到 1/3。');
+  process.exit(1);
 }
 if (verdict === 'warn') {
   console.log('\n结论：能跑，但有一项算不出来（多半是连不上 ComfyUI，先 comfy_health 看一眼）。');
