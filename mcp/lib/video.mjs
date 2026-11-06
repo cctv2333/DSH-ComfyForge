@@ -143,7 +143,7 @@ export function buildH3Workflow(o) {
  * @param {number} [o.height]     一采高（32 倍数，默认 352）
  * @param {number} [o.length]     帧数（5+17k）
  * @param {number} [o.steps]      总步数，默认 12
- * @param {number} [o.splitStep]  一采步数（SplitSigmas step），默认 8
+ * @param {number} [o.splitStep]  一采步数（SplitSigmas step），默认 10（= 总 12 步里二采只跑 2 步）
  * @param {number} [o.scale]      放大倍数，默认 2
  * @param {number} [o.chunk]      MMH3 时间块（17 的倍数），默认 153
  * @param {number} [o.overlap]    块重叠（17 的倍数），默认 17
@@ -155,7 +155,10 @@ export function buildH3Pass2Workflow(o) {
   const h = o.height ?? 352;
   const scale = o.scale ?? 2;
   const steps = o.steps ?? 12;
-  const splitStep = o.splitStep ?? 8;
+  // 默认 10：2026-11-07 A/B 实测（同提示词同种子）splitStep 10 比 8 快 25%（763s→572s），
+  // 构图/表情/切点完全一致、ahash 相同，只有微细节低 ~9%（lap_var 284→258）。
+  // 想更锐就把 splitStep 设回 8。
+  const splitStep = o.splitStep ?? 10;
   if (w % 32 || h % 32) throw new Error(`一采宽高必须是 32 的倍数：${w}x${h}`);
   // 走"独立短曲线"二采（会重新加噪）的唯一条件：调用者显式给了 refine 参数。
   // 默认走 SplitSigmas 8+4——σ 连续下降一次，音频才不会被重采样毁掉。

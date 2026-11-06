@@ -104,7 +104,7 @@ const is2pass = mode === '2pass';
 const W = cfg.width ?? (is2pass ? 608 : 1216);
 const H = cfg.height ?? (is2pass ? 352 : 704);
 const STEPS = cfg.steps ?? (is2pass ? 12 : 8);
-const splitStep = cfg.splitStep ?? 8;
+const splitStep = cfg.splitStep ?? 10; // A/B 实测默认：比 8 快 25%，画面肉眼无差别
 const scale = cfg.scale ?? 2;
 const seed0 = cfg.seed ?? 2000;
 const shotTimeoutS = cfg.shotTimeoutS ?? 1500; // 单镜硬超时（默认 25 分钟）

@@ -1,5 +1,5 @@
 {
-  "name": "guofeng-15s-step10",
+  "name": "guofeng-15s-step8",
   "mode": "2pass",
   "image": "三视图-基准图-front.png",
   "promptFile": "2026-11-06-国风少女-15s-5镜-官方六段.txt",
@@ -7,11 +7,11 @@
   "width": 608,
   "height": 352,
   "steps": 12,
-  "splitStep": 10,
+  "splitStep": 8,
   "scale": 2,
   "chunk": 153,
   "overlap": 17,
   "seed": 20261106,
   "shotTimeoutS": 5400,
-  "out": "out/guofeng-15s-step10.mp4"
+  "out": "out/guofeng-15s-step8.mp4"
 }
