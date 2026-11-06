@@ -302,5 +302,32 @@ console.log('\n== 12. 仓库里不能有写死的本机绝对路径 ==');
   ok('代码里没有写死的本机绝对路径', r.status === 0, (r.stdout || '').split('\n').slice(0, 6).join(' | '));
 }
 
+console.log('\n== 13. 版本号不能各说各话 ==');
+{
+  // 为什么要有这一组：0.3.3 那次自己记过教训「版本号写死两份，发版必漂移」，
+  // 结果 README 顶部那行和 mcp/package.json 又漂了 —— 用户一眼就看到"还是 0.3.3"。
+  // 所以把"三处必须等于 package.json"变成断言。
+  // dsh-plugin/package.json 例外：它是本地 link 的私有包，版本独立、不影响用户。
+  const { execFileSync } = await import('node:child_process');
+  const rootVersion = JSON.parse(readFileSync(join(PROJECT_ROOT, 'package.json'), 'utf8')).version;
+  ok('package.json 版本是 x.y.z', /^\d+\.\d+\.\d+$/.test(rootVersion), rootVersion);
+
+  // README 顶部那行 `**版本 \`x.y.z\`**` 是给人看的第一句话，最容易漏
+  const readme = readFileSync(join(PROJECT_ROOT, 'README.md'), 'utf8');
+  const head = /^\*\*版本 `([^`]+)`\*\*/m.exec(readme);
+  ok('README 顶部标了版本', Boolean(head), String(head?.[1]));
+  ok('README 顶部版本 = package.json', head?.[1] === rootVersion, `README ${head?.[1]} vs pkg ${rootVersion}`);
+
+  // 子包版本
+  const sub = JSON.parse(readFileSync(join(PROJECT_ROOT, 'mcp', 'package.json'), 'utf8')).version;
+  ok('mcp/package.json 版本 = 根 package.json', sub === rootVersion, `mcp ${sub} vs pkg ${rootVersion}`);
+
+  // MCP 服务自报的版本也必须是这一个（server.mjs 从 package.json 读，这里验证真的读到了）
+  const serverSrc = readFileSync(join(PROJECT_ROOT, 'mcp', 'server.mjs'), 'utf8');
+  ok('server.mjs 不再写死版本号', !new RegExp(`['"]${rootVersion.replace(/\./g, '\\.')}['"]`).test(serverSrc));
+
+  void execFileSync; // 保留导入以便后续扩展
+}
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

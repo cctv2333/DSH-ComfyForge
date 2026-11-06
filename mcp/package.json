@@ -1,6 +1,6 @@
 {
   "name": "comfyforge-mcp",
-  "version": "0.3.0",
+  "version": "0.3.10",
   "private": true,
   "type": "module",
   "description": "ComfyUI MCP for DeepSeek Harness: generate, wait, inspect (objective image metrics), snapshot (contact sheet), diagnose. Ships no models and no ComfyUI — run `node doctor.mjs` first.",

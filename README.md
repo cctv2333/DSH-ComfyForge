@@ -1,6 +1,6 @@
 # ComfyForge
 
-**版本 `0.3.3`** · MIT · <https://github.com/cctv2333/DSH-ComfyForge>
+**版本 `0.3.10`** · MIT · <https://github.com/cctv2333/DSH-ComfyForge>
 
 把本机 ComfyUI 变成 **agent 能看见自己产出、能自检、能按证据改** 的工具链：
 33 个 MCP 工具 + 一套客观质检 + 一个执行实时面板 + 一组零依赖的 CLI 工具。
