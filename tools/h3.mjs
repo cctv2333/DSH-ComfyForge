@@ -70,7 +70,35 @@ for (const s of cfg.shots || []) {
   }
   if (bad) console.error(`\n⚠ 有 ${bad} 条结构不合格，但配置里 allowInvalidPrompt=true，继续执行。`);
 }
+// ── 资源体检（开跑前算账）──────────────────────────────────────────────────
+// 2026-11-06 有一次二采跑了 3 小时 20 分还 OOM 两次，根因是内存/commit 不够，
+// H3 的 20GB 权重只能从磁盘反复 stage。所以这里先问 capacity.mjs 要一份结论。
 const is2pass = mode === '2pass';
+{
+  const { spawnSync } = await import('node:child_process');
+  const capArgs = [
+    path.join(PROJECT_ROOT, 'tools', 'capacity.mjs'), '--json',
+    '--for', is2pass ? 'h3-2pass' : 'h3-1pass',
+    '--seconds', String(cfg.seconds ?? 5),
+    '--chunk', String(cfg.chunk ?? 153),
+    '--overlap', String(cfg.overlap ?? 17),
+  ];
+  const r = spawnSync(process.execPath, capArgs, { encoding: 'utf8', timeout: 60_000, windowsHide: true });
+  let cap = null;
+  try { cap = JSON.parse(r.stdout || ''); } catch { /* 体检跑挂了不影响主流程 */ }
+  if (cap) {
+    const force = process.argv.includes('--force') || cfg.forceCapacity === true;
+    const mark = (o) => (o === true ? '✓' : o === false ? '✗' : '!');
+    console.log(`[资源体检] ${cap.kind}｜预计 ${cap.estimate.minutes} 分钟｜权重 ${cap.weightsGB}GB`);
+    for (const row of cap.rows) console.log(`  ${mark(row.ok)} ${row.name}：当前 ${row.have}（需要 ${row.need}）`);
+    if (cap.verdict === 'red' && !force) {
+      console.error('\n资源不够，已停止（**没有提交**）。最有效的解法：重启 ComfyUI 把 staged 权重还回去，关掉不用的浏览器标签，再重跑。');
+      console.error('确实要硬跑：加 --force，或在配置里写 "forceCapacity": true。');
+      process.exit(4);
+    }
+    if (cap.verdict === 'red') console.error('\n⚠ 资源不够，但加了 --force，继续（很可能 OOM 或跑几小时）。');
+  }
+}
 // 2pass 的一采分辨率要低（低清抽卡），单遍/多镜沿用高清
 const W = cfg.width ?? (is2pass ? 608 : 1216);
 const H = cfg.height ?? (is2pass ? 352 : 704);
