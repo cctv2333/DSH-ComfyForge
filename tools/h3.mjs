@@ -127,9 +127,9 @@ try {
     '',
     `- 时间：${new Date().toISOString()}`,
     `- 模式：${mode}${is2pass
-      ? (cfg.splitSigmas
-        ? `（一采 ${W}x${H} ${STEPS} 步拆 ${splitStep} → ×${scale} = ${W * scale}x${H * scale}，**已知出碎片，仅为复现**）`
-        : `（一采 ${W}x${H} 跑满 ${STEPS} 步 → 3D 放大 ×${scale} = ${W * scale}x${H * scale} → 精修 ${cfg.refineSteps ?? 4} 步 denoise ${cfg.refineDenoise ?? 0.35}，块 ${cfg.chunk ?? 153}/${cfg.overlap ?? 17}）`)
+      ? ((cfg.refineSteps != null || cfg.refineDenoise != null)
+        ? `（一采 ${W}x${H} 跑满 ${STEPS} 步 → 3D 放大 ×${scale} = ${W * scale}x${H * scale} → 独立短曲线精修 ${cfg.refineSteps ?? 4} 步 denoise ${cfg.refineDenoise ?? 0.35}，块 ${cfg.chunk ?? 153}/${cfg.overlap ?? 17}。⚠ 这条路会重新加噪，音频会被一起重采样成谐波）`
+        : `（一采 ${W}x${H} ${STEPS} 步拆 ${splitStep} → σ 连续下降 → ×${scale} = ${W * scale}x${H * scale}，后 ${STEPS - splitStep} 步接同一条曲线，块 ${cfg.chunk ?? 153}/${cfg.overlap ?? 17}）`)
       : ''}`,
     `- 分辨率：${W}x${H}，步数：${STEPS}，seed：${seed0}`,
     metrics ? `- 指标：时长 ${metrics.duration}s / 帧间差分 ${metrics.flicker}（p95 ${metrics.flickerP95}）/ 黑帧段 ${metrics.blackRuns} / 切点 ${metrics.cuts} / 音量 ${metrics.loudnessDb ?? '无'}dB` : null,

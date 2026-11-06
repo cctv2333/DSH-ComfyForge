@@ -37,6 +37,7 @@ const {
   server, J, text, fail, norm, gb, trimMetrics, inspectImages, resolveWorkflow, preflight,
   latentSize, queuePosition, executionFailure, viewHint, visualPayload, logActivity, submitShape,
   EDIT_DIR, withControl, editWorkflow, finishEdit, pollMany, summarizeEntries, newestOutputs,
+  inputDir, resolveVideoPath,
 } = C;
 // 本文件注册 2 个工具：comfy_video, comfy_lint_prompt
 
@@ -88,8 +89,12 @@ server.tool(
           outW: a.out_width, outH: a.out_height,
           seconds: a.seconds ?? 5,
           steps: a.steps ?? (mode === '2pass' ? 12 : 8),
-          refineSteps: a.refine_steps ?? 4,
-          refineDenoise: a.refine_denoise ?? 0.35,
+          // 只有调用者显式要"独立短曲线"时才传这两项。
+          // 以前写死成 ?? 4 / ?? 0.35，等于每次调用都强制二采重新加噪 35%，
+          // 会把音频 latent 一起重采样（实测退化成谐波嗡鸣）。不传就走 SplitSigmas 8+4。
+          ...(a.refine_steps != null || a.refine_denoise != null
+            ? { refineSteps: a.refine_steps, refineDenoise: a.refine_denoise }
+            : {}),
           scale: a.scale ?? 2,
           chunk: a.chunk_frames ?? 153,
           overlap: a.overlap_frames ?? 17,

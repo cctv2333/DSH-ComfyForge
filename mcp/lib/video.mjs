@@ -140,7 +140,10 @@ export function buildH3Pass2Workflow(o) {
   const steps = o.steps ?? 12;
   const splitStep = o.splitStep ?? 8;
   if (w % 32 || h % 32) throw new Error(`一采宽高必须是 32 的倍数：${w}x${h}`);
-  if (o.splitSigmas && splitStep >= steps) throw new Error(`splitStep(${splitStep}) 必须小于 steps(${steps})，否则二采没有 sigma 可跑`);
+  // 走"独立短曲线"二采（会重新加噪）的唯一条件：调用者显式给了 refine 参数。
+  // 默认走 SplitSigmas 8+4——σ 连续下降一次，音频才不会被重采样毁掉。
+  const independentRefine = o.refineSteps != null || o.refineDenoise != null;
+  if (!independentRefine && splitStep >= steps) throw new Error(`splitStep(${splitStep}) 必须小于 steps(${steps})，否则二采没有 sigma 可跑`);
   const upW = Math.round(w * scale / 32) * 32;
   const upH = Math.round(h * scale / 32) * 32;
   const chunk = o.chunk ?? 153;
@@ -177,7 +180,10 @@ export function buildH3Pass2Workflow(o) {
     '14': { class_type: 'BasicGuider', inputs: { model: ['4', 0], conditioning: ['9', 0] } },
     '15': { class_type: 'SamplerCustomAdvanced', inputs: { noise: ['10', 0], guider: ['14', 0], sampler: ['11', 0], sigmas: ['13', 0], latent_image: ['9', 1] } },
     // 放大：拆 AV → 3D 学习型放大（只动视频）→ 拼回
-    '16': { class_type: 'LTXVSeparateAVLatent', inputs: { av_latent: ['15', 0] } },
+    // 取 denoised_output（[1]）而不是 output（[0]）：一采只跑 8 步时 output 仍是
+  // σ≈0.6 的半成品，3D 放大网络按干净 latent 的统计做归一化，喂半成品会放大成
+  // 彩色碎片（实测 704×1216 满屏方块+白色锯齿轮廓）。用户的参考工作流一直取 [1]。
+  '16': { class_type: 'LTXVSeparateAVLatent', inputs: { av_latent: ['15', 1] } },
     '17': {
       class_type: 'MinimaxH3LatentUpscaler3D',
       inputs: {
@@ -202,24 +208,36 @@ export function buildH3Pass2Workflow(o) {
     '22': { class_type: 'VAEDecode', inputs: { samples: ['21', 0], vae: ['6', 0] } },
   };
 
-  // ── 二采的两条路线（2026-11-04 实测，39 帧 / 608×352 → 1216×704）──
+  // ── 二采的两条路线（2026-11-06 重新实测，124 帧 / 352×608 → 704×1216）──
   //
-  // 默认（能用）：一采吃**完整** sigma 跑满 → 放大 → 二采用一条**全新**的短曲线
-  //   BasicScheduler(steps=refineSteps, denoise=refineDenoise)
-  //   实测输出干净、无参考图泄漏。
+  // 【默认 · 正确】splitSigmas=true：一采只跑前 splitStep 步 → 放大 →
+  //   二采吃**同一条曲线**的后半段（SplitSigmas 的 low）。σ 从 1.0 连续降到 0，
+  //   全程只降一次噪。
   //
-  // splitSigmas=true（**实测出碎片，别用**）：一采只跑前 splitStep 步 → 放大 →
-  //   二采吃同一条曲线的后半段（SplitSigmas 的 low）。输出是彩色碎片 + 参考图上的
-  //   文字被糊进画面。原因是学习型 3D 放大网络按**干净** latent 的统计做归一化，
-  //   喂 σ≈0.6 的半成品只会放大噪声；后半段 4 步低噪声救不回来。
-  //   保留这个分支只为复现失败，别当参数用。
-  if (!o.splitSigmas) {
+  // 【可选 · 会毁音频】独立短曲线：一采跑满 steps → 放大 →
+  //   二采另起 BasicScheduler(steps=refineSteps, denoise=refineDenoise)，
+  //   即**重新注入 35% 噪声再降一次**。视频扛得住（甚至更锐），
+  //   **但音频 latent 也被一起加噪重采，audio VAE 解出来是纯谐波嗡鸣。**
+  //   实测对比（同一提示词/seed/参考图，只改这条路）：
+  //     独立短曲线  → 过零率 0.021，频谱是平行横线（1230Hz 整数倍谐波）
+  //     SplitSigmas → 过零率 0.063，频谱有瞬态、全频带铺开
+  //   要让用户自己选这条路，必须显式传 refineSteps 或 refineDenoise。
+  //
+  // 历史更正（BUG-0030 → 本条）：2026-11-04 曾断言"splitSigmas 实测出碎片，别用"。
+  //   2026-11-06 用 124 帧 + 同一套 UNET/res_multistep/shift 12:3/scale 2 重测，
+  //   **画面正常、音频正常，没有碎片**。旧结论来自当时那套组合（39 帧、
+  //   不同采样器），不能归因于 splitSigmas 本身——和 BUG-0030 是同一个错误。
+  const wantsIndependentRefine = independentRefine;
+  if (wantsIndependentRefine) {
     props['15'].inputs.sigmas = ['12', 0];
     props['30'] = {
       class_type: 'BasicScheduler',
       inputs: { model: ['4', 0], scheduler: o.scheduler ?? 'simple', steps: o.refineSteps ?? 4, denoise: o.refineDenoise ?? 0.35 },
     };
     props['21'].inputs.sigmas = ['30', 0];
+  } else {
+    props['15'].inputs.sigmas = ['13', 0];
+    props['21'].inputs.sigmas = ['13', 1];
   }
 
   if (o.audio !== false) {
@@ -242,17 +260,21 @@ export function buildH3Pass2Workflow(o) {
       class_type: 'SamplerCustomAdvanced',
       inputs: { noise: ['10', 0], guider: ['14', 0], sampler: ['11', 0], sigmas: ['12', 0], latent_image: ['9', 1] },
     };
-    props['22'] = { class_type: 'VAEDecode', inputs: { samples: ['15', 0], vae: ['6', 0] } };
-    if (o.audio !== false) props['23'].inputs.samples = ['15', 0];
+    props['22'] = { class_type: 'VAEDecode', inputs: { samples: ['15', 1], vae: ['6', 0] } };
+    if (o.audio !== false) props['23'].inputs.samples = ['15', 1];
   }
 
   return {
     workflow: props,
     meta: {
       width: w, height: h, upW, upH, steps,
-      splitStep: o.splitSigmas ? splitStep : null,
-      splitSigmas: !!o.splitSigmas,
-      refine: o.splitSigmas ? null : { steps: o.refineSteps ?? 4, denoise: o.refineDenoise ?? 0.35 },
+      splitStep: independentRefine ? null : splitStep,
+      splitSigmas: !independentRefine,
+      refine: independentRefine ? { steps: o.refineSteps ?? 4, denoise: o.refineDenoise ?? 0.35 } : null,
+      // 这一行是给调用方和用户看的：走独立短曲线时音频会退化成谐波（实测过零率 0.021 vs 0.063）
+      audioRisk: independentRefine
+        ? '二采用独立短曲线（重新加噪 35%），音频 latent 被一起重采样，实测退化成谐波嗡鸣。要音频请去掉 refineSteps/refineDenoise，走 SplitSigmas 路径。'
+        : null,
       scale, chunk, overlap,
     },
   };

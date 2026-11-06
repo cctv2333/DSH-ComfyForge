@@ -4,11 +4,12 @@
 // 和 selftest.mjs 的分工：
 //   selftest  端到端：起 MCP 服务、调工具、验协议
 //   unit      纯函数：解析、判定、边界值 —— 重构时先在这里红，比端到端红好定位
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-import { framesFor } from '../lib/video.mjs';
+import { framesFor, buildH3Pass2Workflow } from '../lib/video.mjs';
 import { checkRequirements } from '../lib/requires.mjs';
 import { analyzeModelSlots, findModelSlots } from '../lib/modelslots.mjs';
 import { extractTypes } from '../lib/workflowcheck.mjs';
@@ -88,6 +89,53 @@ console.log('== 6. 淘汰扫描认得视频（坏文件必须被挑出来） =='
   ok('空视频被判为垃圾', r.rejected.length === 1 && /unreadable|too small/.test(r.rejected[0].reasons.join(' ')));
   ok('返回里标注了 kind', r.rejected[0]?.kind === 'video', JSON.stringify(r.rejected[0]));
   rmSync(dir, { recursive: true, force: true });
+}
+
+console.log('== 7. 域文件必须解构它用到的 ctx 导出 ==');
+{
+  // 拆 server.mjs 时踩过的坑（2026-11-06 实锤）：
+  //   media.mjs 用了 inputDir / resolveVideoPath，system.mjs 用了 ACTIVITY，
+  //   但解构表里没有 → 工具一调就 ReferenceError，而 `node --check` 查不出来、
+  //   import 也不报错（错在回调体内，只有真调用才炸）。
+  // 结果 comfy_video / comfy_activity 静默坏掉，80 项 selftest 全绿也没抓到。
+  // 这里只查长度 >=4 的名字：J / gb / text 这类短名会误伤字符串和注释。
+  const toolsDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'tools');
+  const ctxSrc = readFileSync(join(toolsDir, 'ctx.mjs'), 'utf8');
+  const m = ctxSrc.match(/export\s*\{([^}]+)\}/);
+  const exps = m ? m[1].split(',').map((s) => s.trim()).filter(Boolean) : [];
+  ok('ctx.mjs 能解析出导出表', exps.length > 20, String(exps.length));
+
+  const longNames = exps.filter((e) => e.length >= 4);
+  const problems = [];
+  const files = readdirSync(toolsDir).filter((f) => f.endsWith('.mjs') && f !== 'ctx.mjs');
+  ok('tools 下有域文件', files.length >= 6, files.join(','));
+  for (const name of files) {
+    const src = readFileSync(join(toolsDir, name), 'utf8');
+    const dm = src.match(/const\s*\{([\s\S]*?)\}\s*=\s*C;/);
+    const declared = dm ? dm[1].split(',').map((s) => s.trim()).filter(Boolean) : [];
+    for (const e of longNames) {
+      if (declared.includes(e)) continue;
+      if (new RegExp(`^import[^;]*\\b${e}\\b`, 'm').test(src)) continue;
+      if (new RegExp(`^\\s*(const|let|function|class)\\s+${e}\\b`, 'm').test(src)) continue;
+      if (new RegExp(`\\b${e}\\b`).test(src)) problems.push(`${name}:${e}`);
+    }
+  }
+  ok('没有「用了但没解构」的 ctx 导出', problems.length === 0, problems.join(' '));
+}
+
+console.log('== 8. 二采默认路径（2026-11-06 实炸过一次，防回归）==');
+{
+  // 一采只跑 8 步时，output([0]) 还是 σ≈0.6 的半成品；3D 放大网络按干净 latent 的
+  // 统计做归一化，喂半成品会把噪声放大成**彩色碎片**（满屏方块+白色锯齿轮廓）。
+  // 必须取 SamplerCustomAdvanced 的 denoised_output([1])——用户的参考工作流一直如此。
+  // 同一天还犯过第二个错：只改了 SplitSigmas 却没改这里，结果"音频好了、画面碎了"。
+  const wf = buildH3Pass2Workflow({ image: 'x.png', prompt: 't', width: 320, height: 320, length: 124, seed: 1 }).workflow;
+  ok('一采拆 AV 取 denoised_output', JSON.stringify(wf['16'].inputs.av_latent) === '["15",1]', JSON.stringify(wf['16'].inputs.av_latent));
+  ok('一采用 SplitSigmas 前半', JSON.stringify(wf['15'].inputs.sigmas) === '["13",0]', JSON.stringify(wf['15'].inputs.sigmas));
+  ok('二采用 SplitSigmas 后半', JSON.stringify(wf['21'].inputs.sigmas) === '["13",1]', JSON.stringify(wf['21'].inputs.sigmas));
+  ok('默认不含独立调度节点 30', wf['30'] === undefined);
+  const risky = buildH3Pass2Workflow({ image: 'x.png', prompt: 't', width: 320, height: 320, length: 124, seed: 1, refineDenoise: 0.35 });
+  ok('显式 refine 时给出音频风险警告', typeof risky.meta.audioRisk === 'string' && risky.meta.audioRisk.length > 10);
 }
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

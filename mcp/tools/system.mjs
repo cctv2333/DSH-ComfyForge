@@ -37,6 +37,7 @@ const {
   server, J, text, fail, norm, gb, trimMetrics, inspectImages, resolveWorkflow, preflight,
   latentSize, queuePosition, executionFailure, viewHint, visualPayload, logActivity, submitShape,
   EDIT_DIR, withControl, editWorkflow, finishEdit, pollMany, summarizeEntries, newestOutputs,
+  ACTIVITY,
 } = C;
 // 本文件注册 6 个工具：comfy_health, comfy_nodes, comfy_models, comfy_activity, comfy_profile, comfy_log
 
