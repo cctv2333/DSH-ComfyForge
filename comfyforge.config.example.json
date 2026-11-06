@@ -1,6 +1,6 @@
 {
   "_comment": "复制为 comfyforge.config.json 再改。所有字段都可省略；省略时会依次回退到环境变量与自动探测。",
-  "_comment_comfyRoot": "含 main.py 的那一层，例如 D:/ComfyUI 或 D:/ComfyUI_windows_portable/ComfyUI。留 null = remote 模式（只走 HTTP）",
+  "_comment_comfyRoot": "含 main.py 的那一层，例如你自己机器上 ComfyUI 的安装目录。留 null = remote 模式（只走 HTTP）",
   "_comment_python": "需要 Pillow + numpy。留 null = 自动挑选（优先 ComfyUI 便携包自带的 python）",
 
   "comfyUrl": "http://127.0.0.1:8188",

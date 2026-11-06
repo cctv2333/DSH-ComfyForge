@@ -46,11 +46,14 @@ const PROFILES = {
     minRamFreeGB: 4,
     hardRamFreeGB: 1.5,
     minVramFreeGB: 1.5,
-    // 实测基线：一采 362 帧 65 分钟 → 0.18 分/帧；二采每块约 45 分钟
+    // 实测基线（2026-11-07，显存空闲 6.85GB）：124 帧 + 1 个二采块 = **273 秒**
+    // 反例（2026-11-06，commit 只剩 6GB）：同规模跑了 3 小时 20 分 ≈ 73 倍。
+    // 所以基线按"资源充裕"给，资源不够时由 verdict/提示去放大，不要把最坏情况当默认。
     estimate: (s) => {
       const frames = Math.ceil(s * FPS / 17) * 17 + 5;
       const chunks = frames <= CHUNK ? 1 : 1 + Math.ceil((frames - CHUNK) / (CHUNK - OVERLAP));
-      return { frames, chunks, minutes: Math.round(frames * 0.18 + chunks * 45) };
+      const minutes = Math.max(1, Math.round(frames * 0.037 + (chunks - 1) * 3));
+      return { frames, chunks, minutes };
     },
   },
   'h3-1pass': {
@@ -63,7 +66,7 @@ const PROFILES = {
     minVramFreeGB: 1.5,
     estimate: (s) => {
       const frames = Math.ceil(s * FPS / 17) * 17 + 5;
-      return { frames, chunks: 0, minutes: Math.round(frames * 0.18) };
+      return { frames, chunks: 0, minutes: Math.max(1, Math.round(frames * 0.037)) };
     },
   },
   image: {
@@ -135,6 +138,12 @@ const comfy = await comfyInfo();
 const weightMB = profile.weights.reduce((s, k) => s + WEIGHTS[k], 0);
 const est = profile.estimate(SECONDS);
 
+// ComfyUI 里还缓存着模型时，VRAM 会明显被占（本机实测：空载 ~1.1GB，缓存后 ~5.6GB）。
+// 这时候 commit 低是**正常现象**——权重已经在 RAM/显存里，复用缓存反而更快。
+// 2026-11-07 实测：commit 13.3GB 跑完 5 秒二采只用了 4.5 分钟；
+// 跑完后 commit 掉到 6.1GB（模型留在缓存里），并不代表下一次必爆。
+const cached = Boolean(comfy) && comfy.vramFreeGB < 3;
+
 const rows = [
   {
     name: '物理内存空闲',
@@ -147,8 +156,10 @@ const rows = [
     name: 'Commit 剩余',
     have: commit ? `${commit.freeGB.toFixed(1)} / ${commit.limitGB.toFixed(1)} GB` : '未知',
     need: `≥ ${profile.minCommitGB} GB`,
-    ok: commit ? commit.freeGB >= profile.hardCommitGB : null,
+    // 缓存着模型时，commit 低不代表必爆：硬线降到 3GB
+    ok: commit ? commit.freeGB >= (cached ? 3 : profile.hardCommitGB) : null,
     soft: commit ? commit.freeGB >= profile.minCommitGB : null,
+    note: cached ? 'ComfyUI 已缓存模型，commit 偏低是正常的（复用缓存更快）' : '',
   },
   {
     name: '显存空闲',
@@ -156,12 +167,13 @@ const rows = [
     need: `≥ ${profile.minVramFreeGB} GB`,
     ok: comfy ? comfy.vramFreeGB >= profile.minVramFreeGB : false,
     soft: comfy ? comfy.vramFreeGB >= profile.minVramFreeGB : false,
+    note: cached ? '模型在缓存里，跑起来会自己腾（也可能需要重启才彻底释放）' : '',
   },
   {
     name: '权重 / Commit 剩余',
     have: commit ? `${(weightMB / 1024).toFixed(1)} / ${commit.freeGB.toFixed(1)} GB` : `${(weightMB / 1024).toFixed(1)} GB / 未知`,
     need: `权重 ≤ 剩余`,
-    ok: commit ? commit.freeGB >= 6 : null, // 只要够把最大那个模型分阶段 stream 进来就不算必爆
+    ok: commit ? commit.freeGB >= (cached ? 3 : 6) : null, // 够把最大那个模型分阶段 stream 进来就不算必爆
     soft: commit ? commit.freeGB * 1024 >= weightMB : null,
   },
 ];
@@ -188,11 +200,15 @@ for (const r of rows) {
   // 三态：✓ 舒适 / ⚠ 硬线之上但不舒适（会靠页面文件）/ ✗ 必爆
   const mark = r.ok === false ? '✗' : r.soft === false ? '⚠' : r.ok === null ? '!' : '✓';
   console.log(` ${mark}  ${pad(r.name, 22)} 当前 ${pad(r.have, 22)} 需要 ${r.need}`);
+  if (r.note) console.log(`       ↳ ${r.note}`);
 }
 if (pagefile) console.log(`\n  页面文件 ${pagefile.name} 已分配 ${(pagefile.allocatedMB / 1024).toFixed(1)} GB，已用 ${(pagefile.usedMB / 1024).toFixed(1)} GB`);
 if (comfy) console.log(`  ComfyUI ${comfy.version}｜队列 running ${comfy.running} / pending ${comfy.pending}`);
 
-console.log(`\n  预计耗时 ${est.minutes} 分钟（基线：一采 0.18 分/帧、二采 45 分/块，2026-11-06 实测）`);
+console.log(`\n  预计耗时 ${est.minutes} 分钟（资源充裕时的实测基线；2026-11-07：124 帧/1 块 = 4.5 分钟）`);
+if (verdict !== 'green') {
+  console.log(`  ⚠ 资源不够舒适时，同样的活可能慢 5–70 倍（2026-11-06 实测同规模跑了 3 小时 20 分）`);
+}
 
 if (verdict === 'red') {
   console.log('\n结论：**现在别跑**（会 OOM）。');

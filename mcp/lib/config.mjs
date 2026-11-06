@@ -296,7 +296,7 @@ export function requirePath(field, hint) {
   if (val) return val;
   throw new Error(
     `缺少配置 ${field}。三种设法任选其一：\n` +
-    `  1) 环境变量（如 COMFY_ROOT=D:\\ComfyUI）\n` +
+    `  1) 环境变量（如 COMFY_ROOT=<ComfyUI 安装目录>）\n` +
     `  2) 在 ${CONFIG_PATH} 里写 {"${field}": "..."}\n` +
     (hint ? `  ${hint}\n` : '') +
     `  3) 跑 node mcp/doctor.mjs 看自动探测到了什么`,

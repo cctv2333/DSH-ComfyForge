@@ -27,7 +27,7 @@ export function pythonPath() {
   }
   throw new Error(
     '找不到可用的 Python（需要 Pillow + numpy）。修法：设环境变量 COMFYFORGE_PY 指向 python.exe，' +
-    '或在 comfyforge.config.json 里写 {"python": "C:/Python312/python.exe"}；ComfyUI 便携包自带的 python 通常已装好依赖。' +
+    '或在 comfyforge.config.json 里写 {"python": "<python.exe 的绝对路径>"}；ComfyUI 便携包自带的 python 通常已装好依赖。' +
     '运行 node mcp/doctor.mjs 可看已探测到哪些候选。',
   );
 }

@@ -18,6 +18,7 @@ import { scan as triageScan } from '../lib/triage.mjs';
 import { presenceFromQueue, QueuePresenceCache, MissingTaskTracker, MISSING_TASK_POLICY } from '../lib/comfypolling.mjs';
 import { validateH3Prompt, splitSections, formatH3Problems, FIELDS_FULL, FIELDS_BASE } from '../lib/h3protocol.mjs';
 import { readReferenceImageOrders, resolvePictureNumbers } from '../lib/h3refs.mjs';
+import { PROJECT_ROOT } from '../lib/config.mjs';
 
 let pass = 0, fail = 0;
 const ok = (name, cond, extra = '') => {
@@ -287,6 +288,18 @@ console.log('\n== 11. <Picture n> 编号从图里推导 ==');
 
   ok('空选择 → 空数组', JSON.stringify(resolvePictureNumbers(orders, [])) === '[]');
   ok('槽位越界 → undefined', resolvePictureNumbers(orders, [5]) === undefined);
+}
+
+console.log('\n== 12. 仓库里不能有写死的本机绝对路径 ==');
+{
+  // 为什么要有这一组：用户 2026-11-06 的原话是「怕的是这个硬编码写死我电脑的环境」。
+  // 这类值在别人机器上不会报错，只会**静默失效**（面板不出现、产物为空），
+  // 所以必须由测试来守，而不是靠人记。工具在 tools/check-hardcoded.mjs，
+  // 已实测能抓到当年那个 'D:\\vidlens\\...\\ffmpeg.exe'（双反斜杠写法也要认）。
+  const { spawnSync } = await import('node:child_process');
+  const r = spawnSync(process.execPath, [join(PROJECT_ROOT, 'tools', 'check-hardcoded.mjs')], { encoding: 'utf8' });
+  ok('check-hardcoded 能跑起来', typeof r.stdout === 'string' && r.stdout.length > 0);
+  ok('代码里没有写死的本机绝对路径', r.status === 0, (r.stdout || '').split('\n').slice(0, 6).join(' | '));
 }
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

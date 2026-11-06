@@ -29,7 +29,7 @@ const REPO = path.resolve(HERE, '..');
 const ROOT = argOf('--root', process.env.COMFY_ROOT || '');
 const OUT_BASE = argOf('--out', process.env.BACKUP_DIR || path.join(REPO, 'backups'));
 if (!ROOT) {
-  console.error('缺少 ComfyUI 根目录。用法：node tools/pre-upgrade-snapshot.mjs --root "D:\\ComfyUI" [--out ...]');
+  console.error('缺少 ComfyUI 根目录。用法：node tools/pre-upgrade-snapshot.mjs --root "<ComfyUI 便携包根目录>" [--out ...]');
   console.error('（或设置环境变量 COMFY_ROOT）');
   process.exit(2);
 }

@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 import {
-  OUTPUT_DIR, PROJECT_ROOT, submit, waitFor, parseHistoryEntry, localOutputPath,
+  OUTPUT_DIR, PROJECT_ROOT, COMFY_ROOT, submit, waitFor, parseHistoryEntry, localOutputPath,
 } from './comfy.mjs';
 import { validateH3Prompt, formatH3Problems } from './h3protocol.mjs';
 
@@ -362,12 +362,23 @@ export async function videoStatus(promptId, { waitS = 45 } = {}) {
   return { pending: false, status: p.status, errors: p.errors, files: out, elapsedMs: r.elapsedMs };
 }
 
-/** ffmpeg 位置：env > 本机已知位置 > PATH */
+/**
+ * ffmpeg 位置：环境变量 > 随仓库/随便携包的位置 > PATH。
+ *
+ * 这里原来写死了 `D:\vidlens\vidlens\bin\ffmpeg.exe`（我自己机器上的路径）。
+ * 别人的机器上它不存在 → 静默退回 PATH 里的 `ffmpeg`，如果 PATH 里也没有，
+ * 那就是「抽帧/度量/拼接全都报一句看不懂的错」。所以只认相对位置和环境变量。
+ */
 export function ffmpegBin() {
   const env = process.env.FFMPEG_PATH;
   if (env && existsSync(env)) return env;
-  const known = 'D:\\vidlens\\vidlens\\bin\\ffmpeg.exe';
-  if (existsSync(known)) return known;
+  const exe = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
+  const candidates = [
+    join(PROJECT_ROOT, 'tools', 'bin', exe),
+    COMFY_ROOT ? join(COMFY_ROOT, '..', exe) : '',
+    COMFY_ROOT ? join(COMFY_ROOT, '..', 'ffmpeg', 'bin', exe) : '',
+  ].filter(Boolean);
+  for (const c of candidates) if (existsSync(c)) return c;
   return 'ffmpeg';
 }
 

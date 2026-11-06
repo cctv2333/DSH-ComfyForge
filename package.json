@@ -1,6 +1,6 @@
 {
   "name": "dsh-comfyforge",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "description": "把本机 ComfyUI 变成 agent 能看见产出、能自检、能按证据改的工具链：MCP 服务 + 客观质检 + 执行实时面板。不含模型权重。",
   "type": "module",
   "license": "MIT",
@@ -40,7 +40,8 @@
     "fetch-model": "node tools/fetch-hf-model.mjs",
     "cleanup": "node tools/cleanup.mjs",
     "capacity": "node tools/capacity.mjs",
-    "frame-ab": "node tools/frame-ab.mjs"
+    "frame-ab": "node tools/frame-ab.mjs",
+    "check-hardcoded": "node tools/check-hardcoded.mjs"
   },
   "files": [
     "mcp/",

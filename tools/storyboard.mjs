@@ -228,7 +228,7 @@ function argAll(name) {
 function importImage(srcList, extraRefs = []) {
   const comfyInput = arg('comfy-input', process.env.COMFY_INPUT || (process.env.COMFY_ROOT ? join(process.env.COMFY_ROOT, 'input') : null));
   if (!comfyInput || !existsSync(comfyInput)) {
-    throw new Error('找不到 ComfyUI 的 input 目录：加 --comfy-input "D:\\...\\ComfyUI\\input" 或设 COMFY_ROOT');
+    throw new Error('找不到 ComfyUI 的 input 目录：加 --comfy-input "<ComfyUI 目录>/input" 或设 COMFY_ROOT');
   }
   const all = [...srcList, ...extraRefs];
   const placed = all.map((p, i) => {
