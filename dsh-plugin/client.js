@@ -16,6 +16,106 @@ window.__ModuleLoader__.load({
     const API = '/comfy-live'
     const PANEL_ID = 'comfy-live'
 
+    /** apply 里存进来的 ctx：界面需要在「贴右列 / 浮动窗」之间切换时用 */
+    let UI_CTX = null
+
+    /**
+     * 界面偏好（入口按钮位置等）存 Host 磁盘，不用 localStorage。
+     * 原因：DSH 每次启动端口都会变，浏览器按 origin 隔离存储，换端口 = 新站点 = 空存储。
+     * 用 localStorage 记位置，效果就是"每次打开都忘"。
+     */
+    let uiPrefs = null
+
+    async function loadUiPrefs() {
+      try {
+        const r = await fetch(`${API}/api/ui`, { cache: 'no-store' })
+        const j = await r.json()
+        uiPrefs = j && j.ok ? j : {}
+      } catch { uiPrefs = {} }
+      return uiPrefs
+    }
+
+    function patchUiPrefs(patch) {
+      try {
+        fetch(`${API}/api/ui`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(patch),
+        }).catch(() => { /* ignore */ })
+      } catch { /* ignore */ }
+    }
+
+    /**
+     * 诊断通道：这台机器上没有 DevTools（DSH 跑在桌面壳里），
+     * 所以客户端出问题时唯一能拿到的第一手材料，就是它自己写回 Host 的这行日志。
+     * 任何地方都可以调；失败一律吞掉，绝不因为诊断把界面弄崩。
+     */
+    /**
+     * 客户端诊断：写回 Host 的 /comfy-live/api/diag，落盘到 <projectRoot>/.cache/client-diag.log。
+     *
+     * 2026-11-06 加重：换一台机器时 Host 的 projectRoot 可能指向不存在的目录，
+     * 于是**这条日志本身也写不进去** —— 用户看到"面板出不来"，而两侧都没有任何痕迹。
+     * 现在同时在浏览器内存里留一份环形缓冲，并且第一次写回失败就在控制台喊一声：
+     *   打开 DevTools → 控制台 → window.__COMFY_LIVE_DIAG__ 就能看到全部尝试与错误。
+     */
+    const DIAG_BUF = []
+    let diagPostFailed = false
+
+    function diag(tag, data) {
+      try {
+        const rec = { t: Date.now(), tag, data: data === undefined ? null : data }
+        DIAG_BUF.push(rec)
+        if (DIAG_BUF.length > 300) DIAG_BUF.shift()
+      } catch { /* ignore */ }
+      try {
+        fetch(`${API}/api/diag`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ tag, data: data === undefined ? null : data }),
+          keepalive: true,
+        }).then((r) => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        }).catch((e) => {
+          if (diagPostFailed) return
+          diagPostFailed = true
+          try {
+            console.warn(
+              `[comfy-live] 诊断日志写不回 Host（${(e && e.message) || e}）。`
+              + '通常是插件配置里的 projectRoot 指向了别的机器。'
+              + '已在浏览器内存里留了一份：控制台输入 window.__COMFY_LIVE_DIAG__ 查看。',
+            )
+          } catch { /* ignore */ }
+        })
+      } catch { /* ignore */ }
+    }
+    try { window.__COMFY_LIVE_DIAG__ = DIAG_BUF } catch { /* 非浏览器环境 */ }
+
+    function diagInstall() {
+      if (diagInstall.done) return
+      diagInstall.done = true
+      try {
+        window.addEventListener('error', (e) => {
+          diag('window.error', { msg: String((e && e.message) || ''), src: String((e && e.filename) || ''), line: e && e.lineno })
+        })
+        window.addEventListener('unhandledrejection', (e) => {
+          const r = e && e.reason
+          diag('window.reject', { msg: String((r && r.message) || r) })
+        })
+      } catch { /* ignore */ }
+    }
+
+    /** 把一次尝试的结果记下来，同时返回可读的短字符串（方便塞进 title/日志） */
+    function diagStep(tag, fn) {
+      try {
+        const v = fn()
+        diag(tag, { ok: true, ret: v === undefined ? 'undefined' : String(v) })
+        return v
+      } catch (e) {
+        diag(tag, { ok: false, error: String((e && e.message) || e) })
+        throw e
+      }
+    }
+
     const listeners = new Set()
     let snap = {
       v: 0,
@@ -34,6 +134,11 @@ window.__ModuleLoader__.load({
       library: null,
       workflows: null,
       wfPreview: null,
+      sys: null,
+      spark: [],
+      tasks: [],
+      taskId: null,
+      rightbar: false,
     }
 
     function set(patch) {
@@ -69,6 +174,9 @@ window.__ModuleLoader__.load({
           runs,
           liveId: j.live || null,
           saved: j.saved || null,
+          sys: j.sys || null,
+          spark: Array.isArray(j.spark) ? j.spark : [],
+          tasks: Array.isArray(j.tasks) ? j.tasks : [],
           error: null,
         })
         if (snap.following || !snap.selectedId) {
@@ -114,14 +222,56 @@ window.__ModuleLoader__.load({
       set({ runs: snap.runs.map((r) => (r.id === id ? { ...r, ...patch } : r)) })
     }
 
+    // ---- 任务层：一次需求 = 一个任务；挑中的图记在任务上（服务端落盘）
+
+    function mergeTask(task) {
+      if (!task || !task.id) return
+      const has = snap.tasks.some((t) => t.id === task.id)
+      const tasks = has ? snap.tasks.map((t) => (t.id === task.id ? task : t)) : [task, ...snap.tasks]
+      // 只在还没选过任务时决定初值：优先"有东西在跑"的那个，否则最新的
+      let taskId = snap.taskId
+      if (!taskId) taskId = (tasks.find((t) => t.running) || tasks[0]).id
+      set({ tasks, taskId })
+    }
+
+    async function togglePick(taskId, item, runId) {
+      if (!taskId || !item || !item.filename) return
+      const body = {
+        task: taskId,
+        filename: item.filename,
+        subfolder: item.subfolder || '',
+        type: item.type || 'output',
+        kind: item.kind || 'image',
+        runId: runId || null,
+      }
+      try {
+        const r = await fetch(`${API}/api/pick`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        const j = await r.json()
+        if (j && j.ok && j.task) mergeTask(j.task)
+      } catch { /* 离线就等下一次 */ }
+    }
+
     function mergeDetail(id, patch) {
       const details = { ...snap.details, [id]: { ...(snap.details[id] || {}), ...patch } }
       set({ details })
     }
 
+    // 新任务真的开跑时的回调（用来把右侧栏叫出来）。只通知一次，不参与渲染。
+    const runWatchers = new Set()
+    function onFirstRun(fn) { runWatchers.add(fn); return () => runWatchers.delete(fn) }
+
     function handleEvent(ev) {
       if (!ev || !ev.t) return
       if (ev.t === 'conn') { set({ connected: !!ev.connected }); return }
+      if (ev.t === 'sys') {
+        set({ sys: ev.sys || null, spark: Array.isArray(ev.spark) ? ev.spark : snap.spark })
+        return
+      }
+      if (ev.t === 'task') { mergeTask(ev.task); return }
       if (ev.t === 'queue') { set({ queue: ev.remaining }); return }
       if (ev.t === 'run:new') {
         const run = ev.run
@@ -132,6 +282,7 @@ window.__ModuleLoader__.load({
         const isLive = run.status === 'running' || run.source === 'live'
         if (!existed && isLive && snap.following) select(run.id, true)
         if (isLive) ensureDetail(run.id)
+        if (!existed && isLive) for (const fn of runWatchers) { try { fn(run) } catch { /* ignore */ } }
         return
       }
       if (ev.t === 'run:summary') { mergeRun(ev.run.id, ev.run); return }
@@ -449,6 +600,18 @@ window.__ModuleLoader__.load({
         hint ? h('p', { className: 'cfl-empty-hint' }, hint) : null)
     }
 
+    /**
+     * 图片兜底：加载失败就显示"产物已删除"，而不是留一个破图或一片空白。
+     * 为什么需要：执行记录是从 ComfyUI 的 /history 回读的，里面的文件可能早被删了，
+     * 界面上就会变成一堆灰块 + 裂图，看起来像面板坏了。
+     */
+    function MediaImg({ className, src, alt, badText }) {
+      const [bad, setBad] = useState(false)
+      if (!src) return h('span', { className: 'cfl-media-bad' }, badText || '无产物')
+      if (bad) return h('span', { className: 'cfl-media-bad' }, badText || '产物已删除')
+      return h('img', { className, src, alt: alt || '', loading: 'lazy', onError: () => setBad(true) })
+    }
+
     function MediaThumb({ item, className }) {
       const kind = outputKind(item)
       if (kind === 'video') {
@@ -459,7 +622,7 @@ window.__ModuleLoader__.load({
       if (kind === 'audio') {
         return h('span', { className: 'cfl-audio-badge' }, '音频')
       }
-      return h('img', { className, src: item.url, alt: item.filename || '', loading: 'lazy' })
+      return h(MediaImg, { className, src: item.url, alt: item.filename || '' })
     }
 
     function Legend() {
@@ -472,6 +635,104 @@ window.__ModuleLoader__.load({
       ]
       return h('div', { className: 'cfl-legend' }, items.map(([cls, text]) =>
         h('span', { key: cls, className: `cfl-legend-item ${cls}` }, h('i', null), text)))
+    }
+
+    // ─── 33-sys.js ─────────────────────────────────────────────────────
+    // 33-sys.js — 系统监控条：显存 / 内存 / CPU + 迷你折线 + 看门狗。
+    //
+    // 数据来自 Host：每 2s 取一次 ComfyUI 的 /system_stats（显存、内存、版本），
+    // CPU 用 node:os 的 cpus() 时间差自己算。SSE 推 {t:'sys', sys, spark}。
+    // 这一条要能回答三个问题：现在能不能跑（连没连上）、会不会 OOM（显存还剩多少）、
+    // 以及"监控本身还活着吗"（8s 没新数据 = 宿主/事件流断了）。
+
+    const SYS_STALE_MS = 8000
+
+    /** 8.06G / 16G 这种，比 8589934592 好读；统一一位小数，三行数值对齐才不跳 */
+    function bytesText(n) {
+      if (!n || n <= 0) return '—'
+      const g = n / 1024 ** 3
+      if (g >= 1) return `${g.toFixed(1)}G`
+      return `${Math.round(n / 1024 ** 2)}M`
+    }
+
+    /**
+     * 迷你折线：横轴最近 60 次采样（约 2 分钟），纵轴 0–100%。
+     * 面积 = 显存占用，细线 = CPU。没有图库，60 个点的 SVG 自己画最省。
+     */
+    function SysSpark({ spark }) {
+      const n = spark ? spark.length : 0
+      if (n < 2) return h('div', { className: 'cfl-sys-spark is-empty' })
+      const W = 100
+      const H = 34
+      const px = (i) => (i / (n - 1)) * W
+      const py = (p) => (H - (Math.max(0, Math.min(100, Number(p) || 0)) / 100) * H).toFixed(2)
+      const line = (idx) => spark.map((p, i) => `${px(i).toFixed(2)},${py(p[idx])}`).join(' ')
+      const vram = line(2)
+      return h('svg', {
+        className: 'cfl-sys-spark',
+        viewBox: `0 0 ${W} ${H}`,
+        preserveAspectRatio: 'none',
+        role: 'img',
+        'aria-label': '最近两分钟：面积 = 显存占用，细线 = CPU',
+        'aria-hidden': true,
+      },
+      h('line', { className: 'cfl-spark-mid', x1: 0, y1: H / 2, x2: W, y2: H / 2 }),
+      h('line', { className: 'cfl-spark-base', x1: 0, y1: H, x2: W, y2: H }),
+      h('polygon', { className: 'cfl-spark-area', points: `0,${H} ${vram} ${W},${H}` }),
+      h('polyline', { className: 'cfl-spark-vram', points: vram }),
+      h('polyline', { className: 'cfl-spark-cpu', points: line(1) }))
+    }
+
+    function SysStrip({ sys, spark, connected }) {
+      // 客户端看门狗：宿主每 2s 推一次，8s 没动静就不是"机器忙"，是监控断了
+      const [, force] = useState(0)
+      const mountedAt = useRef(Date.now())
+      useEffect(() => {
+        const id = setInterval(() => force((x) => x + 1), 2000)
+        return () => clearInterval(id)
+      }, [])
+
+      if (!sys) {
+        // 一直没有 sys 只有两种可能：还没连上，或者宿主是没这功能的旧版本
+        const late = Date.now() - mountedAt.current > 6000
+        return h('div', { className: 'cfl-sys is-pending' },
+          h('span', { className: 'cfl-sys-note' }, !connected
+            ? '未连接 ComfyUI'
+            : late ? '宿主没有提供系统状态（插件是旧版本，重启 DSH 后生效）' : '读取系统状态…'))
+      }
+
+      const stale = !sys.at || Date.now() - sys.at > SYS_STALE_MS
+      const down = !stale && !!sys.down
+      const bad = stale || down
+      const warn = !bad && sys.warn === 'vram_low'
+      const vramUsed = sys.vramTotal ? sys.vramTotal - sys.vramFree : 0
+      const ramUsed = sys.ramTotal ? sys.ramTotal - sys.ramFree : 0
+      const rows = [
+        ['CPU', sys.cpu == null ? '—' : `${sys.cpu}%`, false],
+        ['显存', sys.vramTotal ? `${bytesText(vramUsed)}/${bytesText(sys.vramTotal)}` : '—', warn],
+        ['内存', sys.ramTotal ? `${bytesText(ramUsed)}/${bytesText(sys.ramTotal)}` : '—', false],
+      ]
+      const title = [
+        sys.gpu ? `GPU ${sys.gpu}` : '',
+        sys.version ? `ComfyUI ${sys.version}` : '',
+        sys.python ? `Python ${sys.python}` : '',
+        sys.at ? `采样于 ${clock(sys.at)}` : '',
+      ].filter(Boolean).join(' · ')
+
+      return h('div', { className: `cfl-sys${bad ? ' is-down' : warn ? ' is-warn' : ''}`, title },
+        h('div', { className: 'cfl-sys-main' },
+          h(SysSpark, { spark }),
+          h('div', { className: 'cfl-sys-stats' }, rows.map(([k, v, isWarn]) =>
+            h('div', { key: k, className: `cfl-sys-stat${isWarn ? ' is-warn' : ''}` },
+              h('em', null, k),
+              h('b', null, v))))),
+        bad || warn ? h('div', { className: 'cfl-sys-alert' },
+          h('b', null, stale ? '监控中断' : down ? 'ComfyUI 无响应' : '显存吃紧'),
+          h('span', null, stale
+            ? '已经 8 秒收不到系统状态，宿主或事件流可能断了。'
+            : down
+              ? `连续 ${sys.fails} 次取不到 /system_stats，现在提交会失败。`
+              : `空闲显存 ${bytesText(sys.vramFree)}，下一次提交可能 OOM。`)) : null)
     }
 
     // ─── 35-workbench.js ───────────────────────────────────────────────
@@ -557,7 +818,7 @@ window.__ModuleLoader__.load({
           : !lib.ok
             ? h('div', { className: 'cfl-w-empty' }, lib.error || '读不到产物目录')
             : filtered.length === 0
-              ? h('div', { className: 'cfl-w-empty' }, '这个分类下还没有文件')
+              ? h('div', { className: 'cfl-w-empty' }, '这个分类还没有文件。在 ComfyUI 里跑一张，产物会自动出现在这里（这里直接读 output 目录，不用手动导入）')
               : h('div', { className: 'cfl-grid-wrap' },
                 h('div', { className: 'cfl-grid' }, shown.map((item) => h('button', {
                   key: `${item.subfolder}/${item.filename}`,
@@ -569,7 +830,7 @@ window.__ModuleLoader__.load({
                 h('span', { className: 'cfl-tile-frame' },
                   item.kind === 'video'
                     ? h('video', { className: 'cfl-tile-media', src: `${item.url}#t=0.1`, muted: true, preload: 'metadata', playsInline: true })
-                    : h('img', { className: 'cfl-tile-media', src: item.url, alt: '', loading: 'lazy', decoding: 'async' }),
+                    : h(MediaImg, { className: 'cfl-tile-media', src: item.url, alt: '' }),
                   item.kind === 'video' ? h('span', { className: 'cfl-tile-badge' }, '视频') : null,
                   h('span', { className: 'cfl-tile-meta' },
                     h('span', { className: 'cfl-tile-name' }, item.filename),
@@ -656,105 +917,222 @@ window.__ModuleLoader__.load({
     }
 
     // ─── 37-float.js ───────────────────────────────────────────────────
-    // 37-float.js — 右侧浮窗：聊天区不动，任务进度挂在右边。
-    // 为什么不做成主面板：主面板会替换对话区（用户实测：点开就看不到聊天了）。
+    // 37-float.js — 右下角那个入口按钮（只有一个按钮，没有浮窗、没有抽屉）。
+    //
+    // 2026-11-05 定案：工作台是右侧那一整列（跟左栏相对）；这里只负责"怎么进那一列"。
+    // 用户的三条要求，逐一对应：
+    //   1) **能拖**：按住它就能拖到别处，位置记在 localStorage。
+    //      坑（都处理了）：只认左键会让人觉得中键拖不动 → 左键+中键都收；
+    //      不快 setPointerCapture 时指针拖出元素会断；不 preventDefault 会变成拖选文字；
+    //      松手不解绑会越拖越卡。
+    //   2) **能藏**：点 × 就彻底消失（挡住内容时用）。找回来走左栏的「Comfy 工作台」。
+    //   3) **能进**：单击（没拖动）→ 打开右侧那一整列。
 
-    const FLOAT_KEY = 'cfl.float.v1'
+    const PILL_KEY = 'cfl.pill.v1'
 
-    function loadFloat() {
-      try {
-        const j = JSON.parse(localStorage.getItem(FLOAT_KEY) || '{}')
-        return {
-          open: !!j.open,
-          w: Math.max(420, Math.min(900, Number(j.w) || 520)),
-          dismissedAuto: !!j.dismissedAuto,
-        }
-      } catch { return { open: false, w: 520, dismissedAuto: false } }
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
+    const vw = () => (typeof window !== 'undefined' && window.innerWidth) || 1440
+    const vh = () => (typeof window !== 'undefined' && window.innerHeight) || 900
+    const PILL_W = 132
+    const PILL_H = 38
+
+    function defaultPill() {
+      return { x: Math.max(8, vw() - PILL_W - 16), y: Math.max(8, vh() - PILL_H - 16), hidden: false }
     }
 
+    function loadPill() {
+      const d = defaultPill()
+      try {
+        const j = JSON.parse(localStorage.getItem(PILL_KEY) || '{}')
+        const num = (v, dv) => (Number.isFinite(Number(v)) ? Number(v) : dv)
+        return {
+          x: clamp(num(j.x, d.x), 0, Math.max(0, vw() - PILL_W)),
+          y: clamp(num(j.y, d.y), 0, Math.max(0, vh() - PILL_H)),
+          // hidden 故意**不持久化**：藏起来只对本次有效，刷新/重启一定回来。
+          // 之前存了它，用户藏掉之后四面八方都找不到入口 —— 那就是"再也找不回来"。
+          hidden: false,
+        }
+      } catch { return d }
+    }
 
-    let floatState = loadFloat()
-    const floatListeners = new Set()
+    /**
+     * 位置不再存在 localStorage：DSH 每次启动端口都变，origin 跟着变，
+     * 存储等于每次都是空的 —— 那就是"每次打开都跑到中间、每次都要重新挪"。
+     * 现在 x/y 由 Host 磁盘上的 runs/ui-state.json 提供；没存过就用 x=null，
+     * 渲染时靠 CSS 贴右边，绝不靠“算出来的默认坐标”（算早了会算到 0，跑到左上/中间）。
+     */
+    let pillState = { x: null, y: null, hidden: false }
+    const pillListeners = new Set()
 
-    function useFloat() {
-      const [v, setV] = useState(floatState)
+    function usePill() {
+      const [v, setV] = useState(pillState)
       useEffect(() => {
-        const fn = () => setV(floatState)
-        floatListeners.add(fn)
-        return () => floatListeners.delete(fn)
+        const fn = () => setV(pillState)
+        pillListeners.add(fn)
+        return () => pillListeners.delete(fn)
       }, [])
       return v
     }
 
-    function setFloat(patch) {
-      floatState = { ...floatState, ...patch }
-      try { localStorage.setItem(FLOAT_KEY, JSON.stringify(floatState)) } catch { /* ignore */ }
-      for (const fn of floatListeners) { try { fn() } catch { /* ignore */ } }
+    function setPill(patch) {
+      pillState = { ...pillState, ...patch }
+      for (const fn of pillListeners) { try { fn() } catch { /* ignore */ } }
     }
 
-    /** 需要 ctx 才能"全屏打开"，所以由 apply 注入 */
-    function makeFloatPanel(ctx) {
-      return function FloatPanel(props) {
+    /** 把位置写到 Host 磁盘（跟端口无关，下次启动还在原处） */
+    function persistPillPos() {
+      if (pillState.x === null || pillState.y === null) return
+      patchUiPrefs({ pill: { x: Math.round(pillState.x), y: Math.round(pillState.y) } })
+    }
+
+    /** 运行中的步数短文案 */
+    function step0(run) {
+      const p = run && run.progress
+      return p && p.max ? `${p.value}/${p.max} 步` : '在跑'
+    }
+
+    function makeFloatPanel(ctx, openWorkbench) {
+      return function EntryPill() {
         const s = useStore()
-        const f = useFloat()
-        const gripRef = useRef(null)
-        // 主面板是否"真的在显示"：DSH 会把面板挂着但隐藏，
-        // 所以必须看可见性（offsetParent），不能只看节点存不存在。
+        const p = usePill()
         const [mainOpen, setMainOpen] = useState(false)
+        const [paneOpen, setPaneOpen] = useState(false)
+        const dragRef = useRef(null)
+
+        // 主面板是否在显示
         useEffect(() => {
           const check = () => {
             const el = document.querySelector('.cfl-main:not(.is-compact)')
             setMainOpen(!!el && el.offsetParent !== null)
+            let open = false
+            try {
+              const right = UI_CTX && typeof UI_CTX.get === 'function' ? UI_CTX.get('sidebarRight') : null
+              open = !!(right && typeof right.isExpanded === 'function' && right.isExpanded())
+            } catch { open = false }
+            setPaneOpen(open)
           }
           check()
-          const id = setInterval(check, 600)
+          const id = setInterval(check, 800)
           return () => clearInterval(id)
         }, [])
+
+        // 藏起来只在"还有别的路能进工作台"时成立。
+        // 面板一关（右栏收起 / 主面板退出），按钮必须自己回来 —— 否则就是永远找不回来。
+        useEffect(() => {
+          if (pillState.hidden && !mainOpen && !paneOpen) setPill({ hidden: false })
+        }, [mainOpen, paneOpen])
+
+        // 首次挂载：从 Host 磁盘读回上次放的位置（跨启动有效，跟端口无关）
+        useEffect(() => {
+          let alive = true
+          loadUiPrefs().then((prefs) => {
+            if (!alive) return
+            const q = prefs && prefs.pill
+            if (!q || !Number.isFinite(Number(q.x)) || !Number.isFinite(Number(q.y))) return
+            setPill({
+              x: clamp(Number(q.x), 0, Math.max(0, vw() - PILL_W)),
+              y: clamp(Number(q.y), 0, Math.max(0, vh() - PILL_H)),
+            })
+          }).catch(() => { /* 读不到就用默认贴右 */ })
+          return () => { alive = false }
+        }, [])
+
+        // 视口变了把它拉回可见范围
+        useEffect(() => {
+          const onResize = () => {
+            if (pillState.x === null) return
+            setPill({
+              x: clamp(pillState.x, 0, Math.max(0, vw() - PILL_W)),
+              y: clamp(pillState.y, 0, Math.max(0, vh() - PILL_H)),
+            })
+          }
+          window.addEventListener('resize', onResize)
+          return () => window.removeEventListener('resize', onResize)
+        }, [])
+
         const live = s.runs.find((r) => r.status === 'running') || null
 
-        // 有新任务开始：自动把侧栏叫出来（除非用户手动收起过）
-        useEffect(() => {
-          if (live && !floatState.open && !floatState.dismissedAuto) setFloat({ open: true })
-        }, [live ? live.id : null])
+        // 面板开着时允许藏；面板关着就一定显示（这条保证"永远找得回来"）
+        if (p.hidden && (mainOpen || paneOpen)) return null
 
-        // 拖左边缘改宽度
-        const startResize = (e) => {
-          if (e.button !== 0) return
+        // 按下：先记起点，不立刻移动；松手时看位移决定"拖"还是"点"
+        const onDown = (e) => {
+          if (e.button !== 0 && e.button !== 1) return
           e.preventDefault()
+          e.stopPropagation()
+          try { if (e.currentTarget.setPointerCapture) e.currentTarget.setPointerCapture(e.pointerId) } catch { /* ignore */ }
           const startX = e.clientX
-          const startW = floatState.w
-          const move = (ev) => setFloat({ w: Math.max(420, Math.min(900, startW + (startX - ev.clientX))) })
+          const startY = e.clientY
+          // 还没有保存过位置时（x=null，靠 CSS 贴右），从元素的真实矩形起算，
+          // 否则第一次拖会从 (0,0) 起跳，看着就像"一拖就飞回中间"。
+          let baseX = pillState.x
+          let baseY = pillState.y
+          if (baseX === null || baseY === null) {
+            const r = e.currentTarget.getBoundingClientRect()
+            baseX = r.left
+            baseY = r.top
+            setPill({ x: baseX, y: baseY })
+          }
+          let moved = 0
+          dragRef.current = { moved: 0 }
+          const move = (ev) => {
+            const dx = ev.clientX - startX
+            const dy = ev.clientY - startY
+            moved = Math.max(moved, Math.abs(dx) + Math.abs(dy))
+            dragRef.current && (dragRef.current.moved = moved)
+            if (moved < 4) return // 手指抖动不算拖
+            setPill({
+              x: clamp(baseX + dx, 0, Math.max(0, vw() - PILL_W)),
+              y: clamp(baseY + dy, 0, Math.max(0, vh() - PILL_H)),
+            })
+          }
           const up = () => {
             window.removeEventListener('pointermove', move)
             window.removeEventListener('pointerup', up)
+            window.removeEventListener('pointercancel', up)
+            if (dragRef.current && dragRef.current.moved >= 4) persistPillPos() // 位置写磁盘
+            const wasDrag = dragRef.current && dragRef.current.moved >= 4
+            dragRef.current = null
+            if (!wasDrag) {
+              // 单击：进右侧那一整列；开不出来就提示一句，绝不静默
+              let opened = false
+              try { opened = !!(openWorkbench && openWorkbench()) } catch { opened = false }
+              if (!opened) {
+                diag('pill.open-failed', {})
+                set({ error: '右侧栏打不开：请按 Ctrl+Alt+B 展开右侧栏后再点，或用左栏的 Comfy 工作台' })
+              }
+            }
           }
           window.addEventListener('pointermove', move)
           window.addEventListener('pointerup', up)
+          window.addEventListener('pointercancel', up)
         }
 
-        if (!f.open || mainOpen) return null
-        const step = live && live.progress && live.progress.max ? `${live.progress.value}/${live.progress.max} 步` : ''
-
-        return h('div', { className: 'cfl-float', style: { width: f.w } },
-          h('div', { className: 'cfl-float-bar' },
-            h('span', { className: `cfl-conn${s.connected ? ' is-on' : ''}` }),
-            h('b', { className: 'cfl-float-title' }, 'Comfy 工作台'),
-            h('span', { className: 'cfl-float-meta' },
-              live ? `正在跑${step ? ` · ${step}` : ''}` : (s.ready ? `${s.runs.length} 次执行` : '连接中…')),
+        return h('div', { className: 'cfl-layer' },
+          h(Styles),
+          h('div', {
+            className: 'cfl-pill-wrap',
+            // 没存过位置就走 CSS 贴右下角（不靠计算，算早了会落到中间/左上）
+            style: p.x === null || p.y === null
+              ? { right: '16px', bottom: '16px', width: `${PILL_W}px`, height: `${PILL_H}px` }
+              : { left: `${p.x}px`, top: `${p.y}px`, width: `${PILL_W}px`, height: `${PILL_H}px` },
+          },
             h('button', {
               type: 'button',
-              className: 'cfl-icon-btn',
-              title: '在主页打开',
-              onClick: () => { try { ctx.layout.selectPanel(PANEL_ID) } catch { /* ignore */ } },
-            }, '⤢'),
+              className: `cfl-dock${live ? ' is-run' : ''}${s.connected ? '' : ' is-off'}`,
+              title: '单击打开右侧工作台 · 按住可拖动 · 点 × 隐藏',
+              onPointerDown: onDown,
+            },
+            h('i', { className: 'cfl-dock-dot' }),
+            h('span', { className: 'cfl-dock-label' }, 'Comfy 工作台'),
+            live ? h('span', { className: 'cfl-dock-meta' }, step0(live)) : null),
+            // 隐藏按钮：只在 hover 时显形，不占视觉
             h('button', {
               type: 'button',
-              className: 'cfl-icon-btn',
-              title: '收起（下次有任务时还会自动出现）',
-              onClick: () => setFloat({ open: false }),
-            }, '×')),
-          h('div', { className: 'cfl-float-body' }, h(Panel, { compact: true })),
-          h('div', { className: 'cfl-float-grip', ref: gripRef, onPointerDown: startResize, title: '拖动改宽度' }))
+              className: 'cfl-pill-hide',
+              title: '隐藏（用左栏「Comfy 工作台」可以找回来）',
+              onClick: (e) => { e.stopPropagation(); diag('pill.hide'); setPill({ hidden: true }) },
+            }, '×')))
       }
     }
 
@@ -860,6 +1238,7 @@ window.__ModuleLoader__.load({
                 type: 'button',
                 className: `cfl-run${active ? ' is-active' : ''}`,
                 onClick: () => onSelect(run.id),
+                title: run.label || '执行', // 长标题截断后鼠标悬停能看全
               },
               h(Dot, { status: run.status }),
               h('span', { className: 'cfl-run-text' },
@@ -868,7 +1247,7 @@ window.__ModuleLoader__.load({
                   clock(run.startedAt),
                   run.status === 'running' ? ' · 进行中' : run.durationMs ? ` · ${dur(run.durationMs)}` : '',
                   run.outputs ? ` · ${run.outputs} 个产物` : '')),
-              run.thumb ? h('img', { className: 'cfl-run-thumb', src: run.thumb, alt: '' }) : null)
+              run.thumb ? h(MediaImg, { className: 'cfl-run-thumb', src: run.thumb, alt: '' }) : null)
             })))))
     }
 
@@ -1029,8 +1408,10 @@ window.__ModuleLoader__.load({
         preview ? null : h('div', { className: 'cfl-col-foot' }, h(Legend)))
     }
 
-    function Inspector({ run, detail }) {
+    function Inspector({ run, detail, s }) {
       useTick(1000, !!(run && run.status === 'running'))
+      // 灯箱：点预览图或产物缩略图放大看。窄列里图很小，没有放大就没法判断质量。
+      const [big, setBig] = useState(null)
       if (!run) {
         return h('div', { className: 'cfl-col cfl-col-inspector' },
           h(Empty, { title: '左侧选一次执行', hint: '选中的这次会在这里显示状态、预览、产物和参数。' }))
@@ -1081,25 +1462,56 @@ window.__ModuleLoader__.load({
               h('p', null, String(run.error.message || run.error).slice(0, 240)))
             : null),
 
-        h(Section, { title: '实时预览', aside: run.status === 'running' ? '跟随采样' : null },
-          preview
-            ? (previewKind === 'video'
-              ? h('video', { className: 'cfl-preview-media', src: preview, muted: true, loop: true, autoPlay: true, playsInline: true })
-              : h('img', { className: 'cfl-preview-media', src: preview, alt: '实时预览' }))
-            : h('div', { className: 'cfl-preview-blank' },
-              run.status === 'running' ? '等第一帧…' : '这次没有画面产物')),
+        // 「实时预览」区：默认小图；点了产物/预览后在这里原地放大（不做覆盖层，
+        // 覆盖层在窄列 + DSH 的定位上下文里很容易被裁掉，原地放大一定能看见）
+        h(Section, { title: big ? '放大查看' : '实时预览', aside: big ? null : (run.status === 'running' ? '跟随采样' : null) },
+          big
+            ? h('div', { className: 'cfl-big' },
+              big.kind === 'video'
+                ? h('video', { className: 'cfl-big-img', src: big.url, controls: true, autoPlay: true, loop: true, playsInline: true })
+                : h('img', { className: 'cfl-big-img', src: big.url, alt: big.name || '' }),
+              // 收起做成浮在右上角的按钮：放在媒体下面会被视频撑出可视区，
+              // 而且和视频自己的控制条（播放/进度/音量）挤在一起，抢不到点击。
+              h('button', {
+                type: 'button',
+                className: 'cfl-big-close',
+                title: '收起放大',
+                onClick: () => setBig(null),
+              }, '收起'),
+              big.name ? h('div', { className: 'cfl-big-name' }, big.name) : null)
+            : preview
+              ? (previewKind === 'video'
+                // 视频也要能点开：之前只给图片包了点击，跑视频模型时点预览毫无反应。
+                ? h('button', {
+                  type: 'button',
+                  className: 'cfl-preview-btn',
+                  title: '点击放大播放',
+                  onClick: () => setBig({ url: preview, name: '实时预览', kind: 'video' }),
+                }, h('video', { className: 'cfl-preview-media', src: preview, muted: true, loop: true, autoPlay: true, playsInline: true }))
+                : h('button', {
+                  type: 'button',
+                  className: 'cfl-preview-btn',
+                  title: '点击放大',
+                  onClick: () => setBig({ url: preview, name: '实时预览帧', kind: 'image' }),
+                }, h(MediaImg, { className: 'cfl-preview-media', src: preview, alt: '实时预览', badText: '预览帧已失效' })))
+              : h('div', { className: 'cfl-preview-blank' },
+                run.status === 'running'
+                  ? (run.source === 'queue'
+                    ? '这轮没有实时帧：任务不是经面板提交的，ComfyUI 只把预览发给提交者'
+                    : '等第一帧…')
+                  : '这次没有画面产物')),
 
         outputs.length
           ? h(Section, { title: '产物', aside: `${outputs.length} 个` },
-            h('div', { className: 'cfl-thumbs' }, outputs.slice(-9).map((o, i) =>
-              h('a', {
+            // 胶卷条：一行横滑，不抢纵向高度；点一下进灯箱看大图
+            h('div', { className: 'cfl-film' }, outputs.slice(-24).map((o, i) =>
+              h('button', {
                 key: `${o.filename}-${i}`,
-                className: 'cfl-thumb',
-                href: o.url,
-                target: '_blank',
-                rel: 'noreferrer',
-                title: o.filename,
-              }, h(MediaThumb, { item: o, className: 'cfl-thumb-media' })))))
+                type: 'button',
+                className: 'cfl-film-item',
+                title: `${o.filename}（点击放大）`,
+                onClick: () => setBig({ url: o.url, name: o.filename, kind: outputKind(o) === 'video' ? 'video' : 'image' }),
+              }, h(MediaThumb, { item: o, className: 'cfl-film-media' })))))
           : null,
 
         params.length
@@ -1136,14 +1548,18 @@ window.__ModuleLoader__.load({
       if (compact) {
         return h('div', { className: 'cfl-root is-compact' },
           h(Styles),
+          // 监控条放单列视图最上面
+          h(SysStrip, { sys: s.sys, spark: s.spark, connected: s.connected }),
           s.error ? h('div', { className: 'cfl-banner' }, h('b', null, '出错'), s.error) : null,
           h('div', { className: 'cfl-main is-compact' },
-            h(Inspector, { run, detail })))
+            
+            h(Inspector, { run, detail, s })))
       }
 
       return h('div', { className: 'cfl-root' },
         h(Styles),
         h(TopBar, { s, live, onFollow, onJump }),
+        h(SysStrip, { sys: s.sys, spark: s.spark, connected: s.connected }),
         s.error ? h('div', { className: 'cfl-banner' }, h('b', null, '面板出错'), s.error) : null,
         h(Workbench, { s },
           s.tab === 'assets'
@@ -1153,7 +1569,95 @@ window.__ModuleLoader__.load({
               : h('div', { className: 'cfl-main' },
                 h(Timeline, { s, onSelect }),
                 h(GraphBoard, { run, detail }),
-                h(Inspector, { run, detail }))))
+                h('div', { className: 'cfl-col cfl-col-inspector' },
+                  
+                  h(Inspector, { run, detail, s })))))
+    }
+
+    /**
+     * DockPanel — 右侧整列停靠用（与左栏相对的那一列）。
+     *
+     * 设计要点（2026-11-05 定案）：
+     *  · 它是"整列"，不是浮窗：贴右缘、通高、直角、只有一条左边线，和左栏同一套语言。
+     *  · 它必须**功能完整**：执行 / 产物库 / 工作流 三个区都能进，而不是只显示一次执行的摘要。
+     *  · 一列里放不下三栏画布，所以用「上列表、下详情、顶部三档切换」的结构：
+     *    列表永远在（切走再回来不丢选择），详情区随选中项滚动。
+     *  · 字号只用两档（13 / 12），分区靠留白和一条细线，不靠卡片套卡片。
+     */
+    function DockPanel() {
+      const s = useStore()
+      // 一挂载就在后台把产物库/工作流列表取回来：切过去是现成的，
+      // 不用等、也不用点「刷新」。（之前只有点刷新才加载 —— 用户看到的就是一直"读取中"）
+      useEffect(() => {
+        boot()
+        const t1 = setTimeout(() => { try { loadLibrary() } catch { /* ignore */ } }, 300)
+        const t2 = setTimeout(() => { try { loadWorkflows() } catch { /* ignore */ } }, 1400)
+        return () => { clearTimeout(t1); clearTimeout(t2) }
+      }, [])
+
+      const [seg, setSeg] = useState('run') // run | assets | workflows
+      const [listOpen, setListOpen] = useState(true)
+
+      const run = s.runs.find((r) => r.id === s.selectedId) || null
+      const detail = s.selectedId ? s.details[s.selectedId] : null
+      const live = s.runs.find((r) => r.status === 'running') || null
+      const onSelect = useCallback((id) => select(id, false), [])
+
+      // 切档即加载（有缓存就直接用，没有才请求）
+      const goSeg = useCallback((key) => {
+        setSeg(key)
+        if (key === 'assets') { try { loadLibrary() } catch { /* ignore */ } }
+        if (key === 'workflows') { try { loadWorkflows() } catch { /* ignore */ } }
+      }, [])
+
+      const segBtn = (key, label, extra) => h('button', {
+        type: 'button',
+        className: `cfl-seg-btn${seg === key ? ' is-on' : ''}`,
+        onClick: () => goSeg(key),
+      }, label, extra ? h('span', { className: 'cfl-seg-num' }, extra) : null)
+
+      return h('div', { className: 'cfl-root cfl-dock2' },
+        h(Styles),
+
+        // 顶部：状态一行，分区切换一行（两行，避免挤在一行里抢宽度）
+        h('div', { className: 'cfl-dock2-head' },
+          h('span', { className: `cfl-conn${s.connected ? ' is-on' : ''}` }),
+          h('b', { className: 'cfl-dock2-title' }, 'Comfy'),
+          h('span', { className: 'cfl-dock2-live' },
+            live ? (live.progress && live.progress.max ? `在跑 ${live.progress.value}/${live.progress.max}` : '在跑') : (s.ready ? '空闲' : '连接中')),
+          // 藏掉右下角入口后，这里能把它找回来（不依赖刷新/重启）
+          h('button', {
+            type: 'button',
+            className: 'cfl-icon-btn',
+            title: '显示右下角入口按钮',
+            onClick: () => { setPill({ hidden: false }) },
+          }, '⌖')),
+        h('div', { className: 'cfl-dock2-tabs' },
+          h('div', { className: 'cfl-seg' },
+            segBtn('run', '执行', s.runs.length || null),
+            segBtn('assets', '产物'),
+            segBtn('workflows', '工作流'))),
+
+        h(SysStrip, { sys: s.sys, spark: s.spark, connected: s.connected }),
+        s.error ? h('div', { className: 'cfl-banner' }, h('b', null, '出错'), s.error) : null,
+
+        seg === 'assets'
+          ? h('div', { className: 'cfl-dock2-body' }, h(AssetsView, { s }))
+          : seg === 'workflows'
+            ? h('div', { className: 'cfl-dock2-body' }, h(WorkflowsView, { s, onBack: () => set({ wfPreview: null }) }))
+            : h('div', { className: 'cfl-dock2-run' },
+              // 执行列表：默认展开，可折起给详情腾地方；折叠状态不影响功能
+              h('div', { className: `cfl-dock2-list${listOpen ? '' : ' is-folded'}` },
+                h('button', {
+                  type: 'button',
+                  className: 'cfl-dock2-listhead',
+                  onClick: () => setListOpen(!listOpen),
+                },
+                h('span', null, '执行记录'),
+                h('span', { className: 'cfl-dock2-count' }, `${s.runs.length}`),
+                h('span', { className: 'cfl-dock2-fold' }, listOpen ? '收起' : '展开')),
+                listOpen ? h('div', { className: 'cfl-dock2-listbody' }, h(Timeline, { s, onSelect })) : null),
+              h('div', { className: 'cfl-dock2-detail' }, h(Inspector, { run, detail, s }))))
     }
 
     function PanelIcon(props) {
@@ -1187,6 +1691,44 @@ window.__ModuleLoader__.load({
       static getDerivedStateFromError(err) { return { err } }
       componentDidCatch(err) { this.props.onError && this.props.onError(err) }
       render() { return this.state.err ? null : this.props.children }
+    }
+
+    /**
+     * 浮窗专用的边界。为什么必须有：
+     * 没有边界时，浮窗里的 Panel 一抛错，React 会把整棵子树卸掉 —— 界面上就是
+     * "点了完全没反应"，而且没有任何提示。用户遇到的就是这种沉默。
+     * 现在出错会把原因写在浮窗里，同时写进 .cache/client-diag.log。
+     */
+    function ComfyFloatBoundary() {
+      const [err, setErr] = useState(null)
+      const onError = (e) => {
+        diag('panel.error', { msg: String((e && e.message) || e), stack: String((e && e.stack) || '').slice(0, 800) })
+        setErr(e)
+      }
+      if (err) {
+        return h('div', { className: 'cfl-root' },
+          h('div', { className: 'cfl-banner' },
+            h('b', null, '面板渲染失败'),
+            h('div', { style: { marginTop: '6px', whiteSpace: 'pre-wrap' } },
+              String((err && err.message) || err))))
+      }
+      return h(ErrorCatcher, { onError }, h(Panel, { compact: true }))
+    }
+
+    /** 右侧整列停靠用的边界：出错时把原因写在面板里，而不是让整列静默变白 */
+    function DockBoundary() {
+      const [err, setErr] = useState(null)
+      const onError = (e) => {
+        diag('dock.error', { msg: String((e && e.message) || e), stack: String((e && e.stack) || '').slice(0, 800) })
+        setErr(e)
+      }
+      if (err) {
+        return h('div', { className: 'cfl-root' },
+          h('div', { className: 'cfl-banner' },
+            h('b', null, '面板渲染失败'),
+            h('div', { style: { marginTop: '6px', whiteSpace: 'pre-wrap' } }, String((err && err.message) || err))))
+      }
+      return h(ErrorCatcher, { onError }, h(DockPanel))
     }
 
     // ─── 50-styles.js ──────────────────────────────────────────────────
@@ -1322,8 +1864,34 @@ window.__ModuleLoader__.load({
     .cfl-progress.is-indeterminate i{animation:cfl-slide 1.3s ease-in-out infinite}
     .cfl-progress-meta{display:flex;justify-content:space-between;font-size:var(--cfl-fs-meta);color:var(--dsw-alias-label-secondary);margin-top:6px;font-variant-numeric:tabular-nums}
     .cfl-preview-media{display:block;width:100%;max-height:300px;object-fit:contain;border-radius:10px;background:var(--dsw-alias-bg-layer-2)}
-    .cfl-preview-blank{display:flex;align-items:center;justify-content:center;height:150px;border-radius:10px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font-size:var(--cfl-fs-meta)}
+    .cfl-preview-blank{display:flex;align-items:center;justify-content:center;height:150px;border-radius:10px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font-size:var(--cfl-fs-meta);text-align:center;padding:0 14px;line-height:1.6}
+    /* 产物文件没了时的占位：宁可写清楚"已删除"，也不要留一块灰或者裂图 */
+    .cfl-media-bad{display:flex;align-items:center;justify-content:center;width:100%;height:100%;min-height:42px;padding:6px;
+      border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);
+      font-size:11.5px;text-align:center;box-sizing:border-box}
     .cfl-thumbs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+    /* 产物格 + 右上角"选这张" */
+    .cfl-thumb-wrap{position:relative;min-width:0}
+    .cfl-pick{position:absolute;right:5px;top:5px;width:23px;height:23px;display:flex;align-items:center;justify-content:center;
+      padding:0;border-radius:7px;border:1px solid color-mix(in srgb,var(--dsw-alias-label-primary) 18%,transparent);
+      background:color-mix(in srgb,var(--dsw-alias-bg-base) 78%,transparent);color:var(--dsw-alias-label-secondary);
+      font-size:13px;line-height:1;cursor:pointer;backdrop-filter:blur(2px)}
+    .cfl-pick:hover{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
+    .cfl-pick.is-on{background:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-bg-base)}
+    /* 任务条 */
+    .cfl-task-label{font-size:13px;color:var(--dsw-alias-label-primary);margin-bottom:7px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .cfl-task-chips{display:flex;align-items:center;gap:6px;overflow-x:auto;padding:9px 0 2px;scrollbar-width:none}
+    .cfl-task-chips::-webkit-scrollbar{display:none}
+    .cfl-task-chips-label{font-size:11.5px;color:var(--dsw-alias-label-secondary);flex:none;margin-right:1px}
+    .cfl-task-runs{display:flex;gap:6px;overflow-x:auto;padding:9px 0 2px;scrollbar-width:none}
+    .cfl-task-runs::-webkit-scrollbar{display:none}
+    .cfl-task-run{flex:none;width:46px;height:46px;padding:0;border-radius:8px;overflow:hidden;cursor:pointer;
+      border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);display:flex;align-items:center;justify-content:center}
+    .cfl-task-run img{width:100%;height:100%;object-fit:cover;display:block}
+    .cfl-task-run:hover{border-color:var(--dsw-alias-border-l2)}
+    .cfl-task-run.is-active{border-color:var(--dsw-alias-brand-primary);box-shadow:0 0 0 1px var(--dsw-alias-brand-primary)}
+    .cfl-task-run.is-run{border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 55%,var(--dsw-alias-border-l1))}
+    .cfl-task-run-dot{width:7px;height:7px;border-radius:50%;background:var(--dsw-alias-state-idle-primary)}
     .cfl-thumb{display:block;position:relative;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;overflow:hidden;aspect-ratio:1/1;background:var(--dsw-alias-bg-layer-2)}
     .cfl-thumb:hover{border-color:var(--dsw-alias-border-l2)}
     .cfl-thumb-media{width:100%;height:100%;object-fit:cover;display:block}
@@ -1388,15 +1956,145 @@ window.__ModuleLoader__.load({
     .cfl-row-tag{font-size:11.5px;color:var(--dsw-alias-label-secondary);border:1px solid var(--dsw-alias-border-l1);border-radius:6px;padding:1px 6px;white-space:nowrap}
     .cfl-row-time{font-size:11.5px;color:var(--dsw-alias-label-secondary);white-space:nowrap}
 
-    /* ── 右侧停靠栏（不是悬浮卡片：贴窗口右缘、直角、只有一条左边线）── */
-    .cfl-float{position:fixed;right:0;top:38px;bottom:0;z-index:40;pointer-events:auto;display:flex;flex-direction:column;background:var(--dsw-alias-bg-base);border-left:1px solid var(--dsw-alias-border-l1);box-shadow:none;border-radius:0;overflow:hidden}
-    .cfl-float-bar{display:flex;align-items:center;gap:8px;height:44px;padding:0 12px;border-bottom:1px solid var(--dsw-alias-border-l1);flex:none;background:var(--dsw-alias-bg-base)}
+    /* ── 右侧整列停靠面板（与左栏相对的那一列）──
+       语言和左栏一致：通高、直角、只有一条左边线；分区靠留白 + 一条细线，不靠卡片套卡片。 */
+    .cfl-dock2{display:flex;flex-direction:column;height:100%;min-height:0;overflow:hidden;
+      background:var(--dsw-alias-bg-base,#17191c);color:var(--dsw-alias-label-primary,#e6e8eb);
+      border-left:1px solid var(--dsw-alias-border-l1,#2f3338)}
+    .cfl-dock2-head{display:flex;align-items:center;gap:8px;height:40px;padding:0 14px;flex:none}
+    .cfl-dock2-title{font-size:13px;font-weight:600;letter-spacing:.01em}
+    .cfl-dock2-live{margin-left:auto;font-size:12px;color:var(--dsw-alias-label-secondary,#9aa1a9);font-variant-numeric:tabular-nums}
+    .cfl-dock2-tabs{flex:none;padding:0 12px 8px}
+    .cfl-seg{display:inline-flex;gap:2px;padding:2px;border-radius:8px;background:var(--dsw-alias-bg-layer-1,#1e2124);flex-wrap:wrap;max-width:100%}
+    .cfl-seg-btn{display:flex;align-items:center;gap:5px;height:24px;padding:0 10px;border:0;border-radius:6px;
+      background:transparent;color:var(--dsw-alias-label-secondary,#9aa1a9);font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
+    .cfl-seg-btn:hover{color:var(--dsw-alias-label-primary,#e6e8eb)}
+    .cfl-seg-btn.is-on{background:var(--dsw-alias-bg-base,#17191c);color:var(--dsw-alias-label-primary,#e6e8eb);
+      box-shadow:0 1px 2px color-mix(in srgb,#000 30%,transparent)}
+    .cfl-seg-num{font-size:11px;opacity:.62;font-variant-numeric:tabular-nums}
+    .cfl-dock2-body{flex:1;min-height:0;overflow:auto}
+    .cfl-dock2-run{flex:1;min-height:0;display:flex;flex-direction:column}
+    .cfl-dock2-list{flex:none;display:flex;flex-direction:column;min-height:0;max-height:36%;
+      border-top:1px solid var(--dsw-alias-border-l1,#2f3338);border-bottom:1px solid var(--dsw-alias-border-l1,#2f3338)}
+    .cfl-dock2-list.is-folded{max-height:none;border-bottom:0}
+    .cfl-dock2-listhead{display:flex;align-items:center;gap:8px;width:100%;height:30px;padding:0 14px;
+      border:0;background:transparent;color:var(--dsw-alias-label-secondary,#9aa1a9);
+      font:inherit;font-size:12px;cursor:pointer;text-align:left;flex:none}
+    .cfl-dock2-listhead:hover{color:var(--dsw-alias-label-primary,#e6e8eb)}
+    .cfl-dock2-count{font-size:11px;opacity:.7;font-variant-numeric:tabular-nums}
+    .cfl-dock2-fold{margin-left:auto;font-size:11px;opacity:.8}
+    .cfl-dock2-listbody{flex:1;min-height:0;overflow:auto;padding:0 8px 8px}
+    .cfl-dock2-detail{flex:1;min-height:0;overflow:auto}
+    /* ── 视觉整理（窄列里空间稀缺，只留有信息量的东西）──
+      1) 监测条那张空图表在 420px 里只是一块噪点：去掉折线，只留三行读数。
+      2) 读数字改用等宽数字 + 明确的行高，扫一眼就能对比。
+      3) 分区之间用留白分开，不用再套一层卡片。 */
+    .cfl-dock2 .cfl-sys-spark{display:none}
+    .cfl-dock2 .cfl-sys{padding:6px 14px 12px;border-bottom:1px solid var(--dsw-alias-border-l1,#2f3338)}
+    .cfl-dock2 .cfl-sys-main{display:block}
+    .cfl-dock2 .cfl-sys-stats{display:flex;flex-direction:column;gap:1px;margin-top:2px}
+    .cfl-dock2 .cfl-sys-stat{display:flex;justify-content:space-between;gap:10px;font-size:12px;line-height:1.75;
+      color:var(--dsw-alias-label-secondary,#9aa1a9);font-variant-numeric:tabular-nums}
+    /* 产物做成"胶卷条"：一行横滑，不抢纵向高度；点开原地放大。
+       注意：这套规则必须**全局**，不能只写在 .cfl-dock2 下面 ——
+       Inspector 组件主页大屏也在用，漏了作用域就会出现"一张图被拉成一堵墙"。 */
+    .cfl-film{display:flex;gap:6px;overflow-x:auto;padding:2px 0 6px;align-items:flex-start}
+    .cfl-film-item{flex:0 0 72px;width:72px;height:72px;max-width:72px;max-height:72px;padding:0;
+      border:1px solid var(--dsw-alias-border-l1,#2f3338);border-radius:8px;overflow:hidden;
+      background:var(--dsw-alias-bg-layer-2,#26292e);cursor:zoom-in}
+    .cfl-film-item:hover{border-color:var(--dsw-alias-brand-primary,#5b9dff)}
+    .cfl-film-media{width:100%;height:100%;max-width:72px;max-height:72px;object-fit:cover;display:block}
+    /* 原地放大：点预览图/产物后，在同一位置显示大图（不用覆盖层，窄列里最稳） */
+    .cfl-preview-btn{display:block;width:100%;padding:0;border:0;background:transparent;cursor:zoom-in}
+    .cfl-big{position:relative;display:flex;flex-direction:column;gap:6px}
+    .cfl-big-img{width:100%;max-height:min(46vh,420px);object-fit:contain;border-radius:8px;background:#000}
+    /* 收起浮在右上角：视频的播放条在底部，两者不抢位置，也不会被视频撑出可视区 */
+    .cfl-big-close{position:absolute;right:8px;top:8px;z-index:2;height:26px;padding:0 12px;border-radius:6px;
+      border:1px solid rgba(255,255,255,.34);background:rgba(0,0,0,.62);color:#f2f4f6;font:inherit;font-size:12px;
+      cursor:pointer;backdrop-filter:blur(4px)}
+    .cfl-big-close:hover{background:rgba(0,0,0,.82);border-color:#fff}
+    .cfl-big-name{font-size:12px;color:var(--dsw-alias-label-secondary,#9aa1a9);
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .cfl-big-bar{display:none}
+    /* 灯箱样式保留但不再使用（改成原地放大，避免覆盖层被裁） */
+    .cfl-lb{position:fixed;inset:0;z-index:80;display:flex;align-items:center;justify-content:center;
+      background:rgba(0,0,0,.84);cursor:zoom-out;padding:24px}
+    .cfl-lb-img{max-width:100%;max-height:calc(100% - 48px);object-fit:contain;border-radius:6px;
+      box-shadow:0 24px 60px rgba(0,0,0,.5)}
+    .cfl-lb-bar{position:absolute;left:0;right:0;bottom:0;height:42px;display:flex;align-items:center;gap:10px;
+      padding:0 14px;background:rgba(0,0,0,.55);color:#e6e8eb;font-size:12px}
+    .cfl-lb-name{opacity:.82;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .cfl-lb-close{margin-left:auto;height:26px;padding:0 12px;border-radius:6px;border:1px solid rgba(255,255,255,.3);
+      background:transparent;color:#e6e8eb;font-size:12px;cursor:pointer}
+    .cfl-lb-close:hover{background:rgba(255,255,255,.12)}
+    .cfl-dock2 .cfl-thumbs,.cfl-dock2 .cfl-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+    .cfl-dock2 .cfl-tile-name{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+      line-height:1.35;word-break:break-all}
+    .cfl-dock2 .cfl-w-content{padding:4px 12px 12px}
+    .cfl-dock2 .cfl-w-head{padding:6px 2px 10px;gap:8px}
+    .cfl-dock2 .cfl-w-title{font-size:13px;font-weight:600;margin:0}
+    .cfl-dock2 .cfl-w-sub{font-size:12px;color:var(--dsw-alias-label-secondary,#9aa1a9);margin:2px 0 0}
+    /* 停在窄列里时，预览图必须限高：否则一张竖图吃掉半屏，下面的产物和参数全被挤出去 */
+    .cfl-dock2 .cfl-preview-media{max-height:180px;width:100%;object-fit:contain;border-radius:8px}
+    /* 选中项：一条 2px 强调边 + 略深的底，扫一眼就知道在看哪一条 */
+    .cfl-dock2 .cfl-run{position:relative;border-radius:8px}
+    .cfl-dock2 .cfl-run.is-active{background:color-mix(in srgb,var(--dsw-alias-brand-primary,#5b9dff) 10%,transparent)}
+    .cfl-dock2 .cfl-run.is-active::before{content:'';position:absolute;left:0;top:6px;bottom:6px;width:2px;border-radius:2px;
+      background:var(--dsw-alias-brand-primary,#5b9dff)}
+    /* 列表高度给到 44%，行距收紧一点，一屏多看两条 */
+    .cfl-dock2-list{max-height:44%}
+    .cfl-dock2 .cfl-thumbs{grid-template-columns:repeat(2,minmax(0,1fr))}
+    /* ── 抽屉（可拖动、可缩放；右侧栏不可用时的退路）──
+       注意背景色都带兜底值：shell.overlay 里拿不到 DSH 的主题变量，
+       只写 var(--dsw-alias-bg-base) 会解析失败 → 面板变半透明，底下的对话文字透出来。 */
+    .cfl-float{position:absolute;z-index:41;pointer-events:auto;display:flex;flex-direction:column;
+      background:var(--dsw-alias-bg-base,#17191c);border:1px solid var(--dsw-alias-border-l2,#3d444b);border-radius:12px;
+      box-shadow:0 18px 48px color-mix(in srgb,#000 38%,transparent),0 2px 8px color-mix(in srgb,#000 24%,transparent);
+      overflow:hidden;color:var(--dsw-alias-label-primary,#e6e8eb)}
+    .cfl-float-bar{display:flex;align-items:center;gap:8px;height:44px;padding:0 12px;border-bottom:1px solid var(--dsw-alias-border-l1,#2f3338);flex:none;background:var(--dsw-alias-bg-layer-1,#1e2124);cursor:move;user-select:none;touch-action:none}
+    .cfl-float-body{background:var(--dsw-alias-bg-base,#17191c)}
     .cfl-float-title{font-size:13px;font-weight:600;white-space:nowrap}
     .cfl-float-meta{font-size:12px;color:var(--dsw-alias-label-secondary);margin-left:auto;margin-right:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .cfl-float-body{flex:1;min-height:0;overflow:hidden;display:flex}
     .cfl-float-body > .cfl-root{flex:1}
     .cfl-float-grip{position:absolute;left:0;top:0;bottom:0;width:5px;cursor:ew-resize}
     .cfl-float-grip:hover{background:var(--dsw-alias-border-l2)}
+    /* 铺满视口的一层：只用来给里面的东西定位，本身不吃点击。
+       shell.overlay 的容器是 0×0 且贴原点，所以外层尺寸一律用 vw/vh，
+       内部再靠 flex 推位置——这样不会算到 0 上。 */
+    .cfl-layer{position:fixed;left:0;top:0;width:100vw;height:100vh;z-index:60;
+      display:flex;align-items:flex-end;justify-content:flex-end;padding:16px;
+      pointer-events:none;box-sizing:border-box}
+    .cfl-layer > *{pointer-events:auto}
+    /* 右下角改大小 */
+    .cfl-resize{position:absolute;right:0;bottom:0;width:16px;height:16px;cursor:nwse-resize;
+      background:linear-gradient(135deg,transparent 46%,var(--dsw-alias-border-l2) 46%,var(--dsw-alias-border-l2) 56%,transparent 56%,transparent 68%,var(--dsw-alias-border-l2) 68%,var(--dsw-alias-border-l2) 78%,transparent 78%)}
+    .cfl-resize:hover{background:linear-gradient(135deg,transparent 46%,var(--dsw-alias-brand-primary) 46%,var(--dsw-alias-brand-primary) 56%,transparent 56%,transparent 68%,var(--dsw-alias-brand-primary) 68%,var(--dsw-alias-brand-primary) 78%,transparent 78%)}
+    /* 入口按钮的定位壳：绝对定位到 (x,y)，里面只放按钮和 hover 才出现的 × */
+    .cfl-pill-wrap{position:absolute;pointer-events:auto}
+    .cfl-pill-wrap .cfl-dock{width:100%;height:100%;justify-content:center;cursor:grab;touch-action:none;user-select:none}
+    .cfl-pill-wrap .cfl-dock:active{cursor:grabbing}
+    .cfl-pill-hide{position:absolute;right:-7px;top:-7px;width:16px;height:16px;padding:0;line-height:14px;
+      border:1px solid var(--dsw-alias-border-l2,#3d444b);border-radius:50%;background:var(--dsw-alias-bg-base,#17191c);
+      color:var(--dsw-alias-label-secondary,#9aa1a9);font-size:11px;cursor:pointer;opacity:.6;transition:opacity .12s ease}
+    .cfl-pill-wrap:hover .cfl-pill-hide{opacity:1}
+    .cfl-pill-hide:hover{color:var(--dsw-alias-state-error-primary,#f85149);border-color:var(--dsw-alias-state-error-primary,#f85149)}
+    /* 收起后的入口：右下角一张小卡片。 */
+    .cfl-dock{display:flex;align-items:center;gap:8px;height:38px;padding:0 14px;
+      border:1px solid var(--dsw-alias-border-l2);border-radius:19px;
+      background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);
+      font-size:13px;font-weight:500;line-height:1;cursor:pointer;appearance:none;
+      box-shadow:0 6px 22px color-mix(in srgb,#000 26%,transparent);
+      transition:border-color .12s ease,transform .12s ease,background .12s ease}
+    .cfl-dock:hover{border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-bg-layer-2);transform:translateY(-1px)}
+    .cfl-dock:active{transform:translateY(0)}
+    .cfl-dock:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}
+    .cfl-dock-dot{width:7px;height:7px;border-radius:50%;background:var(--dsw-alias-state-idle-primary);flex:none}
+    .cfl-dock-label{white-space:nowrap}
+    .cfl-dock-meta{font-size:12px;font-weight:400;color:var(--dsw-alias-label-secondary);white-space:nowrap}
+    .cfl-dock.is-run{border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 50%,var(--dsw-alias-border-l2))}
+    .cfl-dock.is-run .cfl-dock-dot{background:var(--dsw-alias-brand-primary);animation:cfl-pulse 1.3s ease-in-out infinite}
+    .cfl-dock.is-off .cfl-dock-dot{background:var(--dsw-alias-state-error-primary)}
     .cfl-root.is-compact{min-height:0}
     .cfl-main.is-compact{display:flex;flex-direction:column;padding:0;gap:0;overflow:hidden}
     .cfl-main.is-compact .cfl-col-inspector{padding-right:0;gap:0}
@@ -1408,6 +2106,30 @@ window.__ModuleLoader__.load({
     .cfl-float .cfl-preview-media{width:100%;max-height:38vh;border-radius:0;object-fit:contain;background:var(--dsw-alias-bg-layer-2);display:block}
     .cfl-float .cfl-preview-blank{border-radius:0;height:180px}
     .cfl-float .cfl-thumbs{gap:6px}
+
+    /* ── 系统监控条（显存/内存/CPU + 折线 + 看门狗）──
+       放停靠栏顶部：不滚走，随时能看出"能不能跑、会不会 OOM"。
+       只在真的出问题时上色，正常状态是灰的——装饰色不抢图。 */
+    .cfl-sys{flex:none;padding:8px 12px 9px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-base)}
+    .cfl-sys-main{display:flex;align-items:stretch;gap:12px}
+    .cfl-sys-spark{flex:1;min-width:60px;height:34px;display:block;overflow:visible}
+    .cfl-sys-spark.is-empty{background:linear-gradient(var(--dsw-alias-bg-layer-2),var(--dsw-alias-bg-layer-2));border-radius:4px;opacity:.5}
+    .cfl-spark-base{stroke:var(--dsw-alias-border-l1);stroke-width:1;vector-effect:non-scaling-stroke}
+    .cfl-spark-mid{stroke:var(--dsw-alias-border-l1);stroke-width:1;stroke-dasharray:3 4;opacity:.75;vector-effect:non-scaling-stroke}
+    .cfl-spark-area{fill:var(--dsw-alias-brand-primary);opacity:.18;stroke:none}
+    .cfl-spark-vram{fill:none;stroke:var(--dsw-alias-brand-primary);stroke-width:1.7;stroke-linejoin:round;vector-effect:non-scaling-stroke}
+    .cfl-spark-cpu{fill:none;stroke:var(--dsw-alias-label-secondary);stroke-width:1.1;stroke-dasharray:3 2;opacity:.8;stroke-linejoin:round;vector-effect:non-scaling-stroke}
+    .cfl-sys-stats{flex:none;display:flex;flex-direction:column;justify-content:center;gap:2px}
+    .cfl-sys-stat{display:flex;align-items:baseline;gap:9px;font-size:12px;line-height:1.38}
+    .cfl-sys-stat em{font-style:normal;color:var(--dsw-alias-label-secondary);width:28px;flex:none;font-size:11.5px}
+    .cfl-sys-stat b{font-weight:500;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary);white-space:nowrap}
+    .cfl-sys-stat.is-warn b{color:var(--dsw-alias-state-warn-primary)}
+    .cfl-sys-note{font-size:11.5px;color:var(--dsw-alias-label-secondary)}
+    .cfl-sys-alert{display:flex;align-items:baseline;gap:7px;margin-top:7px;font-size:11.5px;line-height:1.45;color:var(--dsw-alias-label-secondary)}
+    .cfl-sys-alert b{flex:none;color:var(--dsw-alias-state-error-primary);font-weight:600}
+    .cfl-sys.is-warn .cfl-sys-alert b{color:var(--dsw-alias-state-warn-primary)}
+    .cfl-sys.is-down .cfl-sys-spark{opacity:.4}
+    .cfl-sys.is-down .cfl-sys-stat b{color:var(--dsw-alias-state-error-primary)}
 
     @keyframes cfl-pulse{0%,100%{opacity:1}50%{opacity:.35}}
     @keyframes cfl-slide{0%{transform:translateX(-10%)}50%{transform:translateX(160%)}100%{transform:translateX(-10%)}}
@@ -1425,10 +2147,105 @@ window.__ModuleLoader__.load({
     }
 
     // ─── 60-apply.js ───────────────────────────────────────────────────
-    // 60-apply.js — 注册到 DSH：侧栏入口、主面板、右下角备用入口、自动切面板。
+    // 60-apply.js — 三个入口：左栏（主页大屏）、右侧整列停靠（主形态）、右下角卡片（入口）。
+    //
+    // 2026-11-05 定案（前后反复了三次，结论写死在这里）：
+    //  · 工作台是**跟左栏相对的一整列**，不是飘在对话上的卡片。
+    //    理由：它要长期开着、要能扫列表、要能看大图；浮窗会挡住对话，也不像个工具。
+    //  · 那一列用 DSH 自己的右侧栏（Ctrl+Alt+B）——它是唯一能让对话区让出位置、
+    //    而不是被盖住的地方。正文用 DockPanel（执行/产物库/工作流三档都在）。
+    //  · 右下角卡片只是**入口**：它去调 openTab；万一右侧栏调不动，才退化成抽屉。
+    //    入口的可见性永远不由"另一个还没验证成功的动作"决定（这条踩过坑）。
+    //
+    // 右侧栏注册的两个硬约束（都有代码依据，别再犯）：
+    //  1) id 全局唯一，重复注册会抛 "already registered"，而 DSH 热重载不重建注册表
+    //     → 注册失败不影响已有那个 tab，忽略即可。
+    //  2) guide 条目的 title / description 必须是**函数**（lib/client.js:624/618），
+    //     传字符串会让「开始」整页渲染失败 → 一片空白。这里干脆不注册 guide。
+
+    const TAB_ID = '@local/dsh-comfy-live/workbench'
+    const TAB_KIND = 'comfy'
+
+    let TAB_DBG = 'pending'
+
+    function registerTab(ctx, attempt) {
+      const get = typeof ctx.get === 'function' ? ctx.get.bind(ctx) : null
+      const tabs = get ? get('sidebarRightTabs') : null
+      if (!tabs || typeof tabs.register !== 'function') {
+        if (attempt < 10) {
+          setTimeout(() => { try { registerTab(ctx, attempt + 1) } catch { /* ignore */ } }, 400)
+          return
+        }
+        TAB_DBG = 'no-service'
+        diag('tab.register', { ok: false, error: 'no-tabs-service' })
+        return
+      }
+      try {
+        tabs.register({
+          id: TAB_ID,
+          kind: TAB_KIND,
+          priority: 'extension',
+          title: () => 'Comfy 工作台',
+          keepMounted: true,
+        })
+        TAB_DBG = 'ok'
+        diag('tab.register', { ok: true, attempt })
+      } catch (e) {
+        // 已经注册过（热重载）＝ 上一份定义还在用，不算失败
+        TAB_DBG = 'exists'
+        diag('tab.register', { ok: false, error: String((e && e.message) || e).slice(0, 90) })
+      }
+      try {
+        ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
+          name: 'sidebar.right.pane.tab',
+          key: TAB_ID,
+        }, DockBoundary))
+        diag('tab.body', { ok: true })
+      } catch (e) {
+        diag('tab.body', { ok: false, error: String((e && e.message) || e).slice(0, 90) })
+      }
+    }
+
+    /** 打开右侧那一列；返回 true 表示交给了 DSH 的右侧栏 */
+    function openWorkbench(ctx) {
+      try {
+        const get = typeof ctx.get === 'function' ? ctx.get.bind(ctx) : null
+        const right = get ? get('sidebarRight') : null
+        if (right && typeof right.openTab === 'function') {
+          // 栏是收着的就先把栏展开：用户点按钮就是要看见工作台，
+          // 不能只弹一句"请按 Ctrl+Alt+B"再让他自己来（之前就是这个行为）。
+          try {
+            const expanded = typeof right.isExpanded === 'function' ? right.isExpanded() : true
+            if (!expanded && typeof right.toggleExpanded === 'function') {
+              right.toggleExpanded()
+              diag('open.expand', { ok: true })
+            }
+          } catch { /* 展开失败也继续试 openTab */ }
+          right.openTab(TAB_KIND)
+          diag('open.tab', { ok: true })
+          return true
+        }
+        diag('open.tab', { ok: false, error: 'no-openTab' })
+      } catch (e) {
+        diag('open.tab', { ok: false, error: String((e && e.message) || e).slice(0, 90) })
+      }
+      return false
+    }
 
     function apply(ctx) {
-      // 侧栏入口（和主面板同一个 id，DSH 用 id 把两者连起来）
+      UI_CTX = ctx
+      try { diagInstall() } catch { /* ignore */ }
+      try {
+        const get = typeof ctx.get === 'function' ? ctx.get.bind(ctx) : null
+        diag('apply', {
+          slots: !!(ctx && ctx.slots),
+          tabs: !!(get && get('sidebarRightTabs')),
+          layout: !!(ctx && ctx.layout),
+          href: String(location.href).replace(/[?].*/, ''),
+        })
+      } catch { /* ignore */ }
+
+      // 左栏入口：主页面板（大屏看画布/大图时用）
       ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
         name: 'sidebar.panellist',
         id: PANEL_ID,
@@ -1436,25 +2253,25 @@ window.__ModuleLoader__.load({
         label: 'Comfy 工作台',
       }, PanelIcon))
 
-      // 主面板
       ctx.slots.inject('main', () => ctx.slots.register({
         name: 'main',
         key: PANEL_ID,
       }, ComfyPanelBoundary))
 
-      // 右侧浮窗：聊天区不动，进度挂在右边（这是主用法）
+      // 右侧整列停靠（主形态）
+      try { registerTab(ctx, 0) } catch { /* ignore */ }
+
+      // 右下角卡片 + 抽屉（入口 / 退路）
       try {
-        const FloatPanel = makeFloatPanel(ctx)
+        const FloatPanel = makeFloatPanel(ctx, () => openWorkbench(ctx))
         ctx.slots.inject('shell.overlay', () => ctx.slots.register({
           name: 'shell.overlay',
           id: 'comfy-live-float',
           order: 55,
-          label: 'Comfy 工作台浮窗',
+          label: 'Comfy 工作台入口',
         }, FloatPanel))
-      } catch { /* 没有 shell.overlay 也不影响主面板 */ }
+      } catch { /* 没有 shell.overlay 也还有左栏入口 */ }
 
-      // 只启动数据流，不再自动切到主面板。
-      // 主面板会替换对话区（用户明确不要）；新任务出现时由浮窗自己弹出来。
       try {
         boot()
       } catch { /* 数据流起不来也不影响手动点开 */ }

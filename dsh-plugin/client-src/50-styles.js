@@ -130,8 +130,34 @@ function Styles() {
 .cfl-progress.is-indeterminate i{animation:cfl-slide 1.3s ease-in-out infinite}
 .cfl-progress-meta{display:flex;justify-content:space-between;font-size:var(--cfl-fs-meta);color:var(--dsw-alias-label-secondary);margin-top:6px;font-variant-numeric:tabular-nums}
 .cfl-preview-media{display:block;width:100%;max-height:300px;object-fit:contain;border-radius:10px;background:var(--dsw-alias-bg-layer-2)}
-.cfl-preview-blank{display:flex;align-items:center;justify-content:center;height:150px;border-radius:10px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font-size:var(--cfl-fs-meta)}
+.cfl-preview-blank{display:flex;align-items:center;justify-content:center;height:150px;border-radius:10px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font-size:var(--cfl-fs-meta);text-align:center;padding:0 14px;line-height:1.6}
+/* 产物文件没了时的占位：宁可写清楚"已删除"，也不要留一块灰或者裂图 */
+.cfl-media-bad{display:flex;align-items:center;justify-content:center;width:100%;height:100%;min-height:42px;padding:6px;
+  border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);
+  font-size:11.5px;text-align:center;box-sizing:border-box}
 .cfl-thumbs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+/* 产物格 + 右上角"选这张" */
+.cfl-thumb-wrap{position:relative;min-width:0}
+.cfl-pick{position:absolute;right:5px;top:5px;width:23px;height:23px;display:flex;align-items:center;justify-content:center;
+  padding:0;border-radius:7px;border:1px solid color-mix(in srgb,var(--dsw-alias-label-primary) 18%,transparent);
+  background:color-mix(in srgb,var(--dsw-alias-bg-base) 78%,transparent);color:var(--dsw-alias-label-secondary);
+  font-size:13px;line-height:1;cursor:pointer;backdrop-filter:blur(2px)}
+.cfl-pick:hover{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
+.cfl-pick.is-on{background:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-bg-base)}
+/* 任务条 */
+.cfl-task-label{font-size:13px;color:var(--dsw-alias-label-primary);margin-bottom:7px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cfl-task-chips{display:flex;align-items:center;gap:6px;overflow-x:auto;padding:9px 0 2px;scrollbar-width:none}
+.cfl-task-chips::-webkit-scrollbar{display:none}
+.cfl-task-chips-label{font-size:11.5px;color:var(--dsw-alias-label-secondary);flex:none;margin-right:1px}
+.cfl-task-runs{display:flex;gap:6px;overflow-x:auto;padding:9px 0 2px;scrollbar-width:none}
+.cfl-task-runs::-webkit-scrollbar{display:none}
+.cfl-task-run{flex:none;width:46px;height:46px;padding:0;border-radius:8px;overflow:hidden;cursor:pointer;
+  border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);display:flex;align-items:center;justify-content:center}
+.cfl-task-run img{width:100%;height:100%;object-fit:cover;display:block}
+.cfl-task-run:hover{border-color:var(--dsw-alias-border-l2)}
+.cfl-task-run.is-active{border-color:var(--dsw-alias-brand-primary);box-shadow:0 0 0 1px var(--dsw-alias-brand-primary)}
+.cfl-task-run.is-run{border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 55%,var(--dsw-alias-border-l1))}
+.cfl-task-run-dot{width:7px;height:7px;border-radius:50%;background:var(--dsw-alias-state-idle-primary)}
 .cfl-thumb{display:block;position:relative;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;overflow:hidden;aspect-ratio:1/1;background:var(--dsw-alias-bg-layer-2)}
 .cfl-thumb:hover{border-color:var(--dsw-alias-border-l2)}
 .cfl-thumb-media{width:100%;height:100%;object-fit:cover;display:block}
@@ -196,15 +222,145 @@ function Styles() {
 .cfl-row-tag{font-size:11.5px;color:var(--dsw-alias-label-secondary);border:1px solid var(--dsw-alias-border-l1);border-radius:6px;padding:1px 6px;white-space:nowrap}
 .cfl-row-time{font-size:11.5px;color:var(--dsw-alias-label-secondary);white-space:nowrap}
 
-/* ── 右侧停靠栏（不是悬浮卡片：贴窗口右缘、直角、只有一条左边线）── */
-.cfl-float{position:fixed;right:0;top:38px;bottom:0;z-index:40;pointer-events:auto;display:flex;flex-direction:column;background:var(--dsw-alias-bg-base);border-left:1px solid var(--dsw-alias-border-l1);box-shadow:none;border-radius:0;overflow:hidden}
-.cfl-float-bar{display:flex;align-items:center;gap:8px;height:44px;padding:0 12px;border-bottom:1px solid var(--dsw-alias-border-l1);flex:none;background:var(--dsw-alias-bg-base)}
+/* ── 右侧整列停靠面板（与左栏相对的那一列）──
+   语言和左栏一致：通高、直角、只有一条左边线；分区靠留白 + 一条细线，不靠卡片套卡片。 */
+.cfl-dock2{display:flex;flex-direction:column;height:100%;min-height:0;overflow:hidden;
+  background:var(--dsw-alias-bg-base,#17191c);color:var(--dsw-alias-label-primary,#e6e8eb);
+  border-left:1px solid var(--dsw-alias-border-l1,#2f3338)}
+.cfl-dock2-head{display:flex;align-items:center;gap:8px;height:40px;padding:0 14px;flex:none}
+.cfl-dock2-title{font-size:13px;font-weight:600;letter-spacing:.01em}
+.cfl-dock2-live{margin-left:auto;font-size:12px;color:var(--dsw-alias-label-secondary,#9aa1a9);font-variant-numeric:tabular-nums}
+.cfl-dock2-tabs{flex:none;padding:0 12px 8px}
+.cfl-seg{display:inline-flex;gap:2px;padding:2px;border-radius:8px;background:var(--dsw-alias-bg-layer-1,#1e2124);flex-wrap:wrap;max-width:100%}
+.cfl-seg-btn{display:flex;align-items:center;gap:5px;height:24px;padding:0 10px;border:0;border-radius:6px;
+  background:transparent;color:var(--dsw-alias-label-secondary,#9aa1a9);font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
+.cfl-seg-btn:hover{color:var(--dsw-alias-label-primary,#e6e8eb)}
+.cfl-seg-btn.is-on{background:var(--dsw-alias-bg-base,#17191c);color:var(--dsw-alias-label-primary,#e6e8eb);
+  box-shadow:0 1px 2px color-mix(in srgb,#000 30%,transparent)}
+.cfl-seg-num{font-size:11px;opacity:.62;font-variant-numeric:tabular-nums}
+.cfl-dock2-body{flex:1;min-height:0;overflow:auto}
+.cfl-dock2-run{flex:1;min-height:0;display:flex;flex-direction:column}
+.cfl-dock2-list{flex:none;display:flex;flex-direction:column;min-height:0;max-height:36%;
+  border-top:1px solid var(--dsw-alias-border-l1,#2f3338);border-bottom:1px solid var(--dsw-alias-border-l1,#2f3338)}
+.cfl-dock2-list.is-folded{max-height:none;border-bottom:0}
+.cfl-dock2-listhead{display:flex;align-items:center;gap:8px;width:100%;height:30px;padding:0 14px;
+  border:0;background:transparent;color:var(--dsw-alias-label-secondary,#9aa1a9);
+  font:inherit;font-size:12px;cursor:pointer;text-align:left;flex:none}
+.cfl-dock2-listhead:hover{color:var(--dsw-alias-label-primary,#e6e8eb)}
+.cfl-dock2-count{font-size:11px;opacity:.7;font-variant-numeric:tabular-nums}
+.cfl-dock2-fold{margin-left:auto;font-size:11px;opacity:.8}
+.cfl-dock2-listbody{flex:1;min-height:0;overflow:auto;padding:0 8px 8px}
+.cfl-dock2-detail{flex:1;min-height:0;overflow:auto}
+/* ── 视觉整理（窄列里空间稀缺，只留有信息量的东西）──
+  1) 监测条那张空图表在 420px 里只是一块噪点：去掉折线，只留三行读数。
+  2) 读数字改用等宽数字 + 明确的行高，扫一眼就能对比。
+  3) 分区之间用留白分开，不用再套一层卡片。 */
+.cfl-dock2 .cfl-sys-spark{display:none}
+.cfl-dock2 .cfl-sys{padding:6px 14px 12px;border-bottom:1px solid var(--dsw-alias-border-l1,#2f3338)}
+.cfl-dock2 .cfl-sys-main{display:block}
+.cfl-dock2 .cfl-sys-stats{display:flex;flex-direction:column;gap:1px;margin-top:2px}
+.cfl-dock2 .cfl-sys-stat{display:flex;justify-content:space-between;gap:10px;font-size:12px;line-height:1.75;
+  color:var(--dsw-alias-label-secondary,#9aa1a9);font-variant-numeric:tabular-nums}
+/* 产物做成"胶卷条"：一行横滑，不抢纵向高度；点开原地放大。
+   注意：这套规则必须**全局**，不能只写在 .cfl-dock2 下面 ——
+   Inspector 组件主页大屏也在用，漏了作用域就会出现"一张图被拉成一堵墙"。 */
+.cfl-film{display:flex;gap:6px;overflow-x:auto;padding:2px 0 6px;align-items:flex-start}
+.cfl-film-item{flex:0 0 72px;width:72px;height:72px;max-width:72px;max-height:72px;padding:0;
+  border:1px solid var(--dsw-alias-border-l1,#2f3338);border-radius:8px;overflow:hidden;
+  background:var(--dsw-alias-bg-layer-2,#26292e);cursor:zoom-in}
+.cfl-film-item:hover{border-color:var(--dsw-alias-brand-primary,#5b9dff)}
+.cfl-film-media{width:100%;height:100%;max-width:72px;max-height:72px;object-fit:cover;display:block}
+/* 原地放大：点预览图/产物后，在同一位置显示大图（不用覆盖层，窄列里最稳） */
+.cfl-preview-btn{display:block;width:100%;padding:0;border:0;background:transparent;cursor:zoom-in}
+.cfl-big{position:relative;display:flex;flex-direction:column;gap:6px}
+.cfl-big-img{width:100%;max-height:min(46vh,420px);object-fit:contain;border-radius:8px;background:#000}
+/* 收起浮在右上角：视频的播放条在底部，两者不抢位置，也不会被视频撑出可视区 */
+.cfl-big-close{position:absolute;right:8px;top:8px;z-index:2;height:26px;padding:0 12px;border-radius:6px;
+  border:1px solid rgba(255,255,255,.34);background:rgba(0,0,0,.62);color:#f2f4f6;font:inherit;font-size:12px;
+  cursor:pointer;backdrop-filter:blur(4px)}
+.cfl-big-close:hover{background:rgba(0,0,0,.82);border-color:#fff}
+.cfl-big-name{font-size:12px;color:var(--dsw-alias-label-secondary,#9aa1a9);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cfl-big-bar{display:none}
+/* 灯箱样式保留但不再使用（改成原地放大，避免覆盖层被裁） */
+.cfl-lb{position:fixed;inset:0;z-index:80;display:flex;align-items:center;justify-content:center;
+  background:rgba(0,0,0,.84);cursor:zoom-out;padding:24px}
+.cfl-lb-img{max-width:100%;max-height:calc(100% - 48px);object-fit:contain;border-radius:6px;
+  box-shadow:0 24px 60px rgba(0,0,0,.5)}
+.cfl-lb-bar{position:absolute;left:0;right:0;bottom:0;height:42px;display:flex;align-items:center;gap:10px;
+  padding:0 14px;background:rgba(0,0,0,.55);color:#e6e8eb;font-size:12px}
+.cfl-lb-name{opacity:.82;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cfl-lb-close{margin-left:auto;height:26px;padding:0 12px;border-radius:6px;border:1px solid rgba(255,255,255,.3);
+  background:transparent;color:#e6e8eb;font-size:12px;cursor:pointer}
+.cfl-lb-close:hover{background:rgba(255,255,255,.12)}
+.cfl-dock2 .cfl-thumbs,.cfl-dock2 .cfl-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.cfl-dock2 .cfl-tile-name{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+  line-height:1.35;word-break:break-all}
+.cfl-dock2 .cfl-w-content{padding:4px 12px 12px}
+.cfl-dock2 .cfl-w-head{padding:6px 2px 10px;gap:8px}
+.cfl-dock2 .cfl-w-title{font-size:13px;font-weight:600;margin:0}
+.cfl-dock2 .cfl-w-sub{font-size:12px;color:var(--dsw-alias-label-secondary,#9aa1a9);margin:2px 0 0}
+/* 停在窄列里时，预览图必须限高：否则一张竖图吃掉半屏，下面的产物和参数全被挤出去 */
+.cfl-dock2 .cfl-preview-media{max-height:180px;width:100%;object-fit:contain;border-radius:8px}
+/* 选中项：一条 2px 强调边 + 略深的底，扫一眼就知道在看哪一条 */
+.cfl-dock2 .cfl-run{position:relative;border-radius:8px}
+.cfl-dock2 .cfl-run.is-active{background:color-mix(in srgb,var(--dsw-alias-brand-primary,#5b9dff) 10%,transparent)}
+.cfl-dock2 .cfl-run.is-active::before{content:'';position:absolute;left:0;top:6px;bottom:6px;width:2px;border-radius:2px;
+  background:var(--dsw-alias-brand-primary,#5b9dff)}
+/* 列表高度给到 44%，行距收紧一点，一屏多看两条 */
+.cfl-dock2-list{max-height:44%}
+.cfl-dock2 .cfl-thumbs{grid-template-columns:repeat(2,minmax(0,1fr))}
+/* ── 抽屉（可拖动、可缩放；右侧栏不可用时的退路）──
+   注意背景色都带兜底值：shell.overlay 里拿不到 DSH 的主题变量，
+   只写 var(--dsw-alias-bg-base) 会解析失败 → 面板变半透明，底下的对话文字透出来。 */
+.cfl-float{position:absolute;z-index:41;pointer-events:auto;display:flex;flex-direction:column;
+  background:var(--dsw-alias-bg-base,#17191c);border:1px solid var(--dsw-alias-border-l2,#3d444b);border-radius:12px;
+  box-shadow:0 18px 48px color-mix(in srgb,#000 38%,transparent),0 2px 8px color-mix(in srgb,#000 24%,transparent);
+  overflow:hidden;color:var(--dsw-alias-label-primary,#e6e8eb)}
+.cfl-float-bar{display:flex;align-items:center;gap:8px;height:44px;padding:0 12px;border-bottom:1px solid var(--dsw-alias-border-l1,#2f3338);flex:none;background:var(--dsw-alias-bg-layer-1,#1e2124);cursor:move;user-select:none;touch-action:none}
+.cfl-float-body{background:var(--dsw-alias-bg-base,#17191c)}
 .cfl-float-title{font-size:13px;font-weight:600;white-space:nowrap}
 .cfl-float-meta{font-size:12px;color:var(--dsw-alias-label-secondary);margin-left:auto;margin-right:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .cfl-float-body{flex:1;min-height:0;overflow:hidden;display:flex}
 .cfl-float-body > .cfl-root{flex:1}
 .cfl-float-grip{position:absolute;left:0;top:0;bottom:0;width:5px;cursor:ew-resize}
 .cfl-float-grip:hover{background:var(--dsw-alias-border-l2)}
+/* 铺满视口的一层：只用来给里面的东西定位，本身不吃点击。
+   shell.overlay 的容器是 0×0 且贴原点，所以外层尺寸一律用 vw/vh，
+   内部再靠 flex 推位置——这样不会算到 0 上。 */
+.cfl-layer{position:fixed;left:0;top:0;width:100vw;height:100vh;z-index:60;
+  display:flex;align-items:flex-end;justify-content:flex-end;padding:16px;
+  pointer-events:none;box-sizing:border-box}
+.cfl-layer > *{pointer-events:auto}
+/* 右下角改大小 */
+.cfl-resize{position:absolute;right:0;bottom:0;width:16px;height:16px;cursor:nwse-resize;
+  background:linear-gradient(135deg,transparent 46%,var(--dsw-alias-border-l2) 46%,var(--dsw-alias-border-l2) 56%,transparent 56%,transparent 68%,var(--dsw-alias-border-l2) 68%,var(--dsw-alias-border-l2) 78%,transparent 78%)}
+.cfl-resize:hover{background:linear-gradient(135deg,transparent 46%,var(--dsw-alias-brand-primary) 46%,var(--dsw-alias-brand-primary) 56%,transparent 56%,transparent 68%,var(--dsw-alias-brand-primary) 68%,var(--dsw-alias-brand-primary) 78%,transparent 78%)}
+/* 入口按钮的定位壳：绝对定位到 (x,y)，里面只放按钮和 hover 才出现的 × */
+.cfl-pill-wrap{position:absolute;pointer-events:auto}
+.cfl-pill-wrap .cfl-dock{width:100%;height:100%;justify-content:center;cursor:grab;touch-action:none;user-select:none}
+.cfl-pill-wrap .cfl-dock:active{cursor:grabbing}
+.cfl-pill-hide{position:absolute;right:-7px;top:-7px;width:16px;height:16px;padding:0;line-height:14px;
+  border:1px solid var(--dsw-alias-border-l2,#3d444b);border-radius:50%;background:var(--dsw-alias-bg-base,#17191c);
+  color:var(--dsw-alias-label-secondary,#9aa1a9);font-size:11px;cursor:pointer;opacity:.6;transition:opacity .12s ease}
+.cfl-pill-wrap:hover .cfl-pill-hide{opacity:1}
+.cfl-pill-hide:hover{color:var(--dsw-alias-state-error-primary,#f85149);border-color:var(--dsw-alias-state-error-primary,#f85149)}
+/* 收起后的入口：右下角一张小卡片。 */
+.cfl-dock{display:flex;align-items:center;gap:8px;height:38px;padding:0 14px;
+  border:1px solid var(--dsw-alias-border-l2);border-radius:19px;
+  background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);
+  font-size:13px;font-weight:500;line-height:1;cursor:pointer;appearance:none;
+  box-shadow:0 6px 22px color-mix(in srgb,#000 26%,transparent);
+  transition:border-color .12s ease,transform .12s ease,background .12s ease}
+.cfl-dock:hover{border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-bg-layer-2);transform:translateY(-1px)}
+.cfl-dock:active{transform:translateY(0)}
+.cfl-dock:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}
+.cfl-dock-dot{width:7px;height:7px;border-radius:50%;background:var(--dsw-alias-state-idle-primary);flex:none}
+.cfl-dock-label{white-space:nowrap}
+.cfl-dock-meta{font-size:12px;font-weight:400;color:var(--dsw-alias-label-secondary);white-space:nowrap}
+.cfl-dock.is-run{border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 50%,var(--dsw-alias-border-l2))}
+.cfl-dock.is-run .cfl-dock-dot{background:var(--dsw-alias-brand-primary);animation:cfl-pulse 1.3s ease-in-out infinite}
+.cfl-dock.is-off .cfl-dock-dot{background:var(--dsw-alias-state-error-primary)}
 .cfl-root.is-compact{min-height:0}
 .cfl-main.is-compact{display:flex;flex-direction:column;padding:0;gap:0;overflow:hidden}
 .cfl-main.is-compact .cfl-col-inspector{padding-right:0;gap:0}
@@ -216,6 +372,30 @@ function Styles() {
 .cfl-float .cfl-preview-media{width:100%;max-height:38vh;border-radius:0;object-fit:contain;background:var(--dsw-alias-bg-layer-2);display:block}
 .cfl-float .cfl-preview-blank{border-radius:0;height:180px}
 .cfl-float .cfl-thumbs{gap:6px}
+
+/* ── 系统监控条（显存/内存/CPU + 折线 + 看门狗）──
+   放停靠栏顶部：不滚走，随时能看出"能不能跑、会不会 OOM"。
+   只在真的出问题时上色，正常状态是灰的——装饰色不抢图。 */
+.cfl-sys{flex:none;padding:8px 12px 9px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-base)}
+.cfl-sys-main{display:flex;align-items:stretch;gap:12px}
+.cfl-sys-spark{flex:1;min-width:60px;height:34px;display:block;overflow:visible}
+.cfl-sys-spark.is-empty{background:linear-gradient(var(--dsw-alias-bg-layer-2),var(--dsw-alias-bg-layer-2));border-radius:4px;opacity:.5}
+.cfl-spark-base{stroke:var(--dsw-alias-border-l1);stroke-width:1;vector-effect:non-scaling-stroke}
+.cfl-spark-mid{stroke:var(--dsw-alias-border-l1);stroke-width:1;stroke-dasharray:3 4;opacity:.75;vector-effect:non-scaling-stroke}
+.cfl-spark-area{fill:var(--dsw-alias-brand-primary);opacity:.18;stroke:none}
+.cfl-spark-vram{fill:none;stroke:var(--dsw-alias-brand-primary);stroke-width:1.7;stroke-linejoin:round;vector-effect:non-scaling-stroke}
+.cfl-spark-cpu{fill:none;stroke:var(--dsw-alias-label-secondary);stroke-width:1.1;stroke-dasharray:3 2;opacity:.8;stroke-linejoin:round;vector-effect:non-scaling-stroke}
+.cfl-sys-stats{flex:none;display:flex;flex-direction:column;justify-content:center;gap:2px}
+.cfl-sys-stat{display:flex;align-items:baseline;gap:9px;font-size:12px;line-height:1.38}
+.cfl-sys-stat em{font-style:normal;color:var(--dsw-alias-label-secondary);width:28px;flex:none;font-size:11.5px}
+.cfl-sys-stat b{font-weight:500;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary);white-space:nowrap}
+.cfl-sys-stat.is-warn b{color:var(--dsw-alias-state-warn-primary)}
+.cfl-sys-note{font-size:11.5px;color:var(--dsw-alias-label-secondary)}
+.cfl-sys-alert{display:flex;align-items:baseline;gap:7px;margin-top:7px;font-size:11.5px;line-height:1.45;color:var(--dsw-alias-label-secondary)}
+.cfl-sys-alert b{flex:none;color:var(--dsw-alias-state-error-primary);font-weight:600}
+.cfl-sys.is-warn .cfl-sys-alert b{color:var(--dsw-alias-state-warn-primary)}
+.cfl-sys.is-down .cfl-sys-spark{opacity:.4}
+.cfl-sys.is-down .cfl-sys-stat b{color:var(--dsw-alias-state-error-primary)}
 
 @keyframes cfl-pulse{0%,100%{opacity:1}50%{opacity:.35}}
 @keyframes cfl-slide{0%{transform:translateX(-10%)}50%{transform:translateX(160%)}100%{transform:translateX(-10%)}}

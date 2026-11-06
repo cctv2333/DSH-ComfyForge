@@ -80,7 +80,7 @@ function AssetsView({ s }) {
       : !lib.ok
         ? h('div', { className: 'cfl-w-empty' }, lib.error || '读不到产物目录')
         : filtered.length === 0
-          ? h('div', { className: 'cfl-w-empty' }, '这个分类下还没有文件')
+          ? h('div', { className: 'cfl-w-empty' }, '这个分类还没有文件。在 ComfyUI 里跑一张，产物会自动出现在这里（这里直接读 output 目录，不用手动导入）')
           : h('div', { className: 'cfl-grid-wrap' },
             h('div', { className: 'cfl-grid' }, shown.map((item) => h('button', {
               key: `${item.subfolder}/${item.filename}`,
@@ -92,7 +92,7 @@ function AssetsView({ s }) {
             h('span', { className: 'cfl-tile-frame' },
               item.kind === 'video'
                 ? h('video', { className: 'cfl-tile-media', src: `${item.url}#t=0.1`, muted: true, preload: 'metadata', playsInline: true })
-                : h('img', { className: 'cfl-tile-media', src: item.url, alt: '', loading: 'lazy', decoding: 'async' }),
+                : h(MediaImg, { className: 'cfl-tile-media', src: item.url, alt: '' }),
               item.kind === 'video' ? h('span', { className: 'cfl-tile-badge' }, '视频') : null,
               h('span', { className: 'cfl-tile-meta' },
                 h('span', { className: 'cfl-tile-name' }, item.filename),

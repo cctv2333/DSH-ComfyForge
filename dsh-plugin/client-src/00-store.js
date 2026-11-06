@@ -4,6 +4,106 @@
 const API = '/comfy-live'
 const PANEL_ID = 'comfy-live'
 
+/** apply 里存进来的 ctx：界面需要在「贴右列 / 浮动窗」之间切换时用 */
+let UI_CTX = null
+
+/**
+ * 界面偏好（入口按钮位置等）存 Host 磁盘，不用 localStorage。
+ * 原因：DSH 每次启动端口都会变，浏览器按 origin 隔离存储，换端口 = 新站点 = 空存储。
+ * 用 localStorage 记位置，效果就是"每次打开都忘"。
+ */
+let uiPrefs = null
+
+async function loadUiPrefs() {
+  try {
+    const r = await fetch(`${API}/api/ui`, { cache: 'no-store' })
+    const j = await r.json()
+    uiPrefs = j && j.ok ? j : {}
+  } catch { uiPrefs = {} }
+  return uiPrefs
+}
+
+function patchUiPrefs(patch) {
+  try {
+    fetch(`${API}/api/ui`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(patch),
+    }).catch(() => { /* ignore */ })
+  } catch { /* ignore */ }
+}
+
+/**
+ * 诊断通道：这台机器上没有 DevTools（DSH 跑在桌面壳里），
+ * 所以客户端出问题时唯一能拿到的第一手材料，就是它自己写回 Host 的这行日志。
+ * 任何地方都可以调；失败一律吞掉，绝不因为诊断把界面弄崩。
+ */
+/**
+ * 客户端诊断：写回 Host 的 /comfy-live/api/diag，落盘到 <projectRoot>/.cache/client-diag.log。
+ *
+ * 2026-11-06 加重：换一台机器时 Host 的 projectRoot 可能指向不存在的目录，
+ * 于是**这条日志本身也写不进去** —— 用户看到"面板出不来"，而两侧都没有任何痕迹。
+ * 现在同时在浏览器内存里留一份环形缓冲，并且第一次写回失败就在控制台喊一声：
+ *   打开 DevTools → 控制台 → window.__COMFY_LIVE_DIAG__ 就能看到全部尝试与错误。
+ */
+const DIAG_BUF = []
+let diagPostFailed = false
+
+function diag(tag, data) {
+  try {
+    const rec = { t: Date.now(), tag, data: data === undefined ? null : data }
+    DIAG_BUF.push(rec)
+    if (DIAG_BUF.length > 300) DIAG_BUF.shift()
+  } catch { /* ignore */ }
+  try {
+    fetch(`${API}/api/diag`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ tag, data: data === undefined ? null : data }),
+      keepalive: true,
+    }).then((r) => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    }).catch((e) => {
+      if (diagPostFailed) return
+      diagPostFailed = true
+      try {
+        console.warn(
+          `[comfy-live] 诊断日志写不回 Host（${(e && e.message) || e}）。`
+          + '通常是插件配置里的 projectRoot 指向了别的机器。'
+          + '已在浏览器内存里留了一份：控制台输入 window.__COMFY_LIVE_DIAG__ 查看。',
+        )
+      } catch { /* ignore */ }
+    })
+  } catch { /* ignore */ }
+}
+try { window.__COMFY_LIVE_DIAG__ = DIAG_BUF } catch { /* 非浏览器环境 */ }
+
+function diagInstall() {
+  if (diagInstall.done) return
+  diagInstall.done = true
+  try {
+    window.addEventListener('error', (e) => {
+      diag('window.error', { msg: String((e && e.message) || ''), src: String((e && e.filename) || ''), line: e && e.lineno })
+    })
+    window.addEventListener('unhandledrejection', (e) => {
+      const r = e && e.reason
+      diag('window.reject', { msg: String((r && r.message) || r) })
+    })
+  } catch { /* ignore */ }
+}
+
+/** 把一次尝试的结果记下来，同时返回可读的短字符串（方便塞进 title/日志） */
+function diagStep(tag, fn) {
+  try {
+    const v = fn()
+    diag(tag, { ok: true, ret: v === undefined ? 'undefined' : String(v) })
+    return v
+  } catch (e) {
+    diag(tag, { ok: false, error: String((e && e.message) || e) })
+    throw e
+  }
+}
+
 const listeners = new Set()
 let snap = {
   v: 0,
@@ -22,6 +122,11 @@ let snap = {
   library: null,
   workflows: null,
   wfPreview: null,
+  sys: null,
+  spark: [],
+  tasks: [],
+  taskId: null,
+  rightbar: false,
 }
 
 function set(patch) {
@@ -57,6 +162,9 @@ async function refresh() {
       runs,
       liveId: j.live || null,
       saved: j.saved || null,
+      sys: j.sys || null,
+      spark: Array.isArray(j.spark) ? j.spark : [],
+      tasks: Array.isArray(j.tasks) ? j.tasks : [],
       error: null,
     })
     if (snap.following || !snap.selectedId) {
@@ -102,14 +210,56 @@ function mergeRun(id, patch) {
   set({ runs: snap.runs.map((r) => (r.id === id ? { ...r, ...patch } : r)) })
 }
 
+// ---- 任务层：一次需求 = 一个任务；挑中的图记在任务上（服务端落盘）
+
+function mergeTask(task) {
+  if (!task || !task.id) return
+  const has = snap.tasks.some((t) => t.id === task.id)
+  const tasks = has ? snap.tasks.map((t) => (t.id === task.id ? task : t)) : [task, ...snap.tasks]
+  // 只在还没选过任务时决定初值：优先"有东西在跑"的那个，否则最新的
+  let taskId = snap.taskId
+  if (!taskId) taskId = (tasks.find((t) => t.running) || tasks[0]).id
+  set({ tasks, taskId })
+}
+
+async function togglePick(taskId, item, runId) {
+  if (!taskId || !item || !item.filename) return
+  const body = {
+    task: taskId,
+    filename: item.filename,
+    subfolder: item.subfolder || '',
+    type: item.type || 'output',
+    kind: item.kind || 'image',
+    runId: runId || null,
+  }
+  try {
+    const r = await fetch(`${API}/api/pick`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const j = await r.json()
+    if (j && j.ok && j.task) mergeTask(j.task)
+  } catch { /* 离线就等下一次 */ }
+}
+
 function mergeDetail(id, patch) {
   const details = { ...snap.details, [id]: { ...(snap.details[id] || {}), ...patch } }
   set({ details })
 }
 
+// 新任务真的开跑时的回调（用来把右侧栏叫出来）。只通知一次，不参与渲染。
+const runWatchers = new Set()
+function onFirstRun(fn) { runWatchers.add(fn); return () => runWatchers.delete(fn) }
+
 function handleEvent(ev) {
   if (!ev || !ev.t) return
   if (ev.t === 'conn') { set({ connected: !!ev.connected }); return }
+  if (ev.t === 'sys') {
+    set({ sys: ev.sys || null, spark: Array.isArray(ev.spark) ? ev.spark : snap.spark })
+    return
+  }
+  if (ev.t === 'task') { mergeTask(ev.task); return }
   if (ev.t === 'queue') { set({ queue: ev.remaining }); return }
   if (ev.t === 'run:new') {
     const run = ev.run
@@ -120,6 +270,7 @@ function handleEvent(ev) {
     const isLive = run.status === 'running' || run.source === 'live'
     if (!existed && isLive && snap.following) select(run.id, true)
     if (isLive) ensureDetail(run.id)
+    if (!existed && isLive) for (const fn of runWatchers) { try { fn(run) } catch { /* ignore */ } }
     return
   }
   if (ev.t === 'run:summary') { mergeRun(ev.run.id, ev.run); return }

@@ -1,19 +1,25 @@
 # Comfy 实时台 bundle 层：一个 Host 行 + 一个 Client 半。
 # Host 半连 ComfyUI 的 /ws，落盘每次执行，并在 DSH 自己的 HTTP 服务上挂同源路由
 # （/comfy-live/*）：所以没有第二个端口、没有 CORS、不用手动起服务。
-# 可选配置（都可省略）：
-#   comfyUrl    ComfyUI 地址，默认 http://127.0.0.1:8188
-#   comfyRoot   ComfyUI 根目录（用来把我跑的工作流写进它的工作流列表）
-#   projectRoot ComfyForge 仓库根目录（runs/live 落在这里）
-#   saveWorkflow 是否把每次执行的图写进 ComfyUI/user/default/workflows（默认 true）
 #
-# 下面三个路径请改成你自己的；不填 comfyRoot 就退化成「不写工作流列表」。
+# ── 这里**故意不写死任何绝对路径** ────────────────────────────────────────────
+# 以前写的是 comfyRoot: D:/dev/ComfyUI-aki-v3.2/ComfyUI、projectRoot: D:/dev/ComfyForge。
+# 换一台机器，这两个路径"格式合法但不存在"，于是：
+#   runs/live 落在不存在的目录、workflows 找不到、.cache/client-diag.log 也写不进去，
+#   面板起来是空的，诊断日志一起丢，界面上还一句错都不报。
+# 现在就靠下面三条自动回退，装到哪台机器都能跑：
+#   projectRoot 缺省 → 插件目录的上一级（插件就在 <仓库>/dsh-plugin）
+#   comfyRoot   缺省 → 问 ComfyUI 的 /system_stats，从 system.argv[0]（main.py）反推
+#   projectRoot 写了但不像本仓库（没有 mcp/server.mjs 也没有 workflows/）→ 忽略并回退
+# 真要写死，写一段**每台机器都成立**的路径，或者干脆用环境变量：
+#   set COMFYFORGE_ROOT=D:\...\ComfyForge
+#   set COMFY_ROOT=D:\...\ComfyUI
 - insert:
     - id: dsh-comfy-live
       name: '@local/dsh-comfy-live'
       config:
         comfyUrl: http://127.0.0.1:8188
-        comfyRoot: <改成你的 ComfyUI 目录，例如 D:/ComfyUI>
-        projectRoot: <改成你的 ComfyForge 仓库目录>
+        # 下面两项留空 = 自动探测。要显式指定再取消注释：
+        # comfyRoot: D:/dev/ComfyUI-aki-v3.2/ComfyUI
+        # projectRoot: D:/dev/ComfyForge
         saveWorkflow: true
-

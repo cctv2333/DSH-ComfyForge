@@ -41,6 +41,18 @@ function Empty({ title, hint }) {
     hint ? h('p', { className: 'cfl-empty-hint' }, hint) : null)
 }
 
+/**
+ * 图片兜底：加载失败就显示"产物已删除"，而不是留一个破图或一片空白。
+ * 为什么需要：执行记录是从 ComfyUI 的 /history 回读的，里面的文件可能早被删了，
+ * 界面上就会变成一堆灰块 + 裂图，看起来像面板坏了。
+ */
+function MediaImg({ className, src, alt, badText }) {
+  const [bad, setBad] = useState(false)
+  if (!src) return h('span', { className: 'cfl-media-bad' }, badText || '无产物')
+  if (bad) return h('span', { className: 'cfl-media-bad' }, badText || '产物已删除')
+  return h('img', { className, src, alt: alt || '', loading: 'lazy', onError: () => setBad(true) })
+}
+
 function MediaThumb({ item, className }) {
   const kind = outputKind(item)
   if (kind === 'video') {
@@ -51,7 +63,7 @@ function MediaThumb({ item, className }) {
   if (kind === 'audio') {
     return h('span', { className: 'cfl-audio-badge' }, '音频')
   }
-  return h('img', { className, src: item.url, alt: item.filename || '', loading: 'lazy' })
+  return h(MediaImg, { className, src: item.url, alt: item.filename || '' })
 }
 
 function Legend() {

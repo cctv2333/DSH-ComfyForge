@@ -99,6 +99,7 @@ function Timeline({ s, onSelect }) {
             type: 'button',
             className: `cfl-run${active ? ' is-active' : ''}`,
             onClick: () => onSelect(run.id),
+            title: run.label || '执行', // 长标题截断后鼠标悬停能看全
           },
           h(Dot, { status: run.status }),
           h('span', { className: 'cfl-run-text' },
@@ -107,7 +108,7 @@ function Timeline({ s, onSelect }) {
               clock(run.startedAt),
               run.status === 'running' ? ' · 进行中' : run.durationMs ? ` · ${dur(run.durationMs)}` : '',
               run.outputs ? ` · ${run.outputs} 个产物` : '')),
-          run.thumb ? h('img', { className: 'cfl-run-thumb', src: run.thumb, alt: '' }) : null)
+          run.thumb ? h(MediaImg, { className: 'cfl-run-thumb', src: run.thumb, alt: '' }) : null)
         })))))
 }
 
@@ -268,8 +269,10 @@ function GraphBoard({ run, detail, preview }) {
     preview ? null : h('div', { className: 'cfl-col-foot' }, h(Legend)))
 }
 
-function Inspector({ run, detail }) {
+function Inspector({ run, detail, s }) {
   useTick(1000, !!(run && run.status === 'running'))
+  // 灯箱：点预览图或产物缩略图放大看。窄列里图很小，没有放大就没法判断质量。
+  const [big, setBig] = useState(null)
   if (!run) {
     return h('div', { className: 'cfl-col cfl-col-inspector' },
       h(Empty, { title: '左侧选一次执行', hint: '选中的这次会在这里显示状态、预览、产物和参数。' }))
@@ -320,25 +323,56 @@ function Inspector({ run, detail }) {
           h('p', null, String(run.error.message || run.error).slice(0, 240)))
         : null),
 
-    h(Section, { title: '实时预览', aside: run.status === 'running' ? '跟随采样' : null },
-      preview
-        ? (previewKind === 'video'
-          ? h('video', { className: 'cfl-preview-media', src: preview, muted: true, loop: true, autoPlay: true, playsInline: true })
-          : h('img', { className: 'cfl-preview-media', src: preview, alt: '实时预览' }))
-        : h('div', { className: 'cfl-preview-blank' },
-          run.status === 'running' ? '等第一帧…' : '这次没有画面产物')),
+    // 「实时预览」区：默认小图；点了产物/预览后在这里原地放大（不做覆盖层，
+    // 覆盖层在窄列 + DSH 的定位上下文里很容易被裁掉，原地放大一定能看见）
+    h(Section, { title: big ? '放大查看' : '实时预览', aside: big ? null : (run.status === 'running' ? '跟随采样' : null) },
+      big
+        ? h('div', { className: 'cfl-big' },
+          big.kind === 'video'
+            ? h('video', { className: 'cfl-big-img', src: big.url, controls: true, autoPlay: true, loop: true, playsInline: true })
+            : h('img', { className: 'cfl-big-img', src: big.url, alt: big.name || '' }),
+          // 收起做成浮在右上角的按钮：放在媒体下面会被视频撑出可视区，
+          // 而且和视频自己的控制条（播放/进度/音量）挤在一起，抢不到点击。
+          h('button', {
+            type: 'button',
+            className: 'cfl-big-close',
+            title: '收起放大',
+            onClick: () => setBig(null),
+          }, '收起'),
+          big.name ? h('div', { className: 'cfl-big-name' }, big.name) : null)
+        : preview
+          ? (previewKind === 'video'
+            // 视频也要能点开：之前只给图片包了点击，跑视频模型时点预览毫无反应。
+            ? h('button', {
+              type: 'button',
+              className: 'cfl-preview-btn',
+              title: '点击放大播放',
+              onClick: () => setBig({ url: preview, name: '实时预览', kind: 'video' }),
+            }, h('video', { className: 'cfl-preview-media', src: preview, muted: true, loop: true, autoPlay: true, playsInline: true }))
+            : h('button', {
+              type: 'button',
+              className: 'cfl-preview-btn',
+              title: '点击放大',
+              onClick: () => setBig({ url: preview, name: '实时预览帧', kind: 'image' }),
+            }, h(MediaImg, { className: 'cfl-preview-media', src: preview, alt: '实时预览', badText: '预览帧已失效' })))
+          : h('div', { className: 'cfl-preview-blank' },
+            run.status === 'running'
+              ? (run.source === 'queue'
+                ? '这轮没有实时帧：任务不是经面板提交的，ComfyUI 只把预览发给提交者'
+                : '等第一帧…')
+              : '这次没有画面产物')),
 
     outputs.length
       ? h(Section, { title: '产物', aside: `${outputs.length} 个` },
-        h('div', { className: 'cfl-thumbs' }, outputs.slice(-9).map((o, i) =>
-          h('a', {
+        // 胶卷条：一行横滑，不抢纵向高度；点一下进灯箱看大图
+        h('div', { className: 'cfl-film' }, outputs.slice(-24).map((o, i) =>
+          h('button', {
             key: `${o.filename}-${i}`,
-            className: 'cfl-thumb',
-            href: o.url,
-            target: '_blank',
-            rel: 'noreferrer',
-            title: o.filename,
-          }, h(MediaThumb, { item: o, className: 'cfl-thumb-media' })))))
+            type: 'button',
+            className: 'cfl-film-item',
+            title: `${o.filename}（点击放大）`,
+            onClick: () => setBig({ url: o.url, name: o.filename, kind: outputKind(o) === 'video' ? 'video' : 'image' }),
+          }, h(MediaThumb, { item: o, className: 'cfl-film-media' })))))
       : null,
 
     params.length
@@ -375,14 +409,18 @@ function Panel({ compact }) {
   if (compact) {
     return h('div', { className: 'cfl-root is-compact' },
       h(Styles),
+      // 监控条放单列视图最上面
+      h(SysStrip, { sys: s.sys, spark: s.spark, connected: s.connected }),
       s.error ? h('div', { className: 'cfl-banner' }, h('b', null, '出错'), s.error) : null,
       h('div', { className: 'cfl-main is-compact' },
-        h(Inspector, { run, detail })))
+        
+        h(Inspector, { run, detail, s })))
   }
 
   return h('div', { className: 'cfl-root' },
     h(Styles),
     h(TopBar, { s, live, onFollow, onJump }),
+    h(SysStrip, { sys: s.sys, spark: s.spark, connected: s.connected }),
     s.error ? h('div', { className: 'cfl-banner' }, h('b', null, '面板出错'), s.error) : null,
     h(Workbench, { s },
       s.tab === 'assets'
@@ -392,7 +430,95 @@ function Panel({ compact }) {
           : h('div', { className: 'cfl-main' },
             h(Timeline, { s, onSelect }),
             h(GraphBoard, { run, detail }),
-            h(Inspector, { run, detail }))))
+            h('div', { className: 'cfl-col cfl-col-inspector' },
+              
+              h(Inspector, { run, detail, s })))))
+}
+
+/**
+ * DockPanel — 右侧整列停靠用（与左栏相对的那一列）。
+ *
+ * 设计要点（2026-11-05 定案）：
+ *  · 它是"整列"，不是浮窗：贴右缘、通高、直角、只有一条左边线，和左栏同一套语言。
+ *  · 它必须**功能完整**：执行 / 产物库 / 工作流 三个区都能进，而不是只显示一次执行的摘要。
+ *  · 一列里放不下三栏画布，所以用「上列表、下详情、顶部三档切换」的结构：
+ *    列表永远在（切走再回来不丢选择），详情区随选中项滚动。
+ *  · 字号只用两档（13 / 12），分区靠留白和一条细线，不靠卡片套卡片。
+ */
+function DockPanel() {
+  const s = useStore()
+  // 一挂载就在后台把产物库/工作流列表取回来：切过去是现成的，
+  // 不用等、也不用点「刷新」。（之前只有点刷新才加载 —— 用户看到的就是一直"读取中"）
+  useEffect(() => {
+    boot()
+    const t1 = setTimeout(() => { try { loadLibrary() } catch { /* ignore */ } }, 300)
+    const t2 = setTimeout(() => { try { loadWorkflows() } catch { /* ignore */ } }, 1400)
+    return () => { clearTimeout(t1); clearTimeout(t2) }
+  }, [])
+
+  const [seg, setSeg] = useState('run') // run | assets | workflows
+  const [listOpen, setListOpen] = useState(true)
+
+  const run = s.runs.find((r) => r.id === s.selectedId) || null
+  const detail = s.selectedId ? s.details[s.selectedId] : null
+  const live = s.runs.find((r) => r.status === 'running') || null
+  const onSelect = useCallback((id) => select(id, false), [])
+
+  // 切档即加载（有缓存就直接用，没有才请求）
+  const goSeg = useCallback((key) => {
+    setSeg(key)
+    if (key === 'assets') { try { loadLibrary() } catch { /* ignore */ } }
+    if (key === 'workflows') { try { loadWorkflows() } catch { /* ignore */ } }
+  }, [])
+
+  const segBtn = (key, label, extra) => h('button', {
+    type: 'button',
+    className: `cfl-seg-btn${seg === key ? ' is-on' : ''}`,
+    onClick: () => goSeg(key),
+  }, label, extra ? h('span', { className: 'cfl-seg-num' }, extra) : null)
+
+  return h('div', { className: 'cfl-root cfl-dock2' },
+    h(Styles),
+
+    // 顶部：状态一行，分区切换一行（两行，避免挤在一行里抢宽度）
+    h('div', { className: 'cfl-dock2-head' },
+      h('span', { className: `cfl-conn${s.connected ? ' is-on' : ''}` }),
+      h('b', { className: 'cfl-dock2-title' }, 'Comfy'),
+      h('span', { className: 'cfl-dock2-live' },
+        live ? (live.progress && live.progress.max ? `在跑 ${live.progress.value}/${live.progress.max}` : '在跑') : (s.ready ? '空闲' : '连接中')),
+      // 藏掉右下角入口后，这里能把它找回来（不依赖刷新/重启）
+      h('button', {
+        type: 'button',
+        className: 'cfl-icon-btn',
+        title: '显示右下角入口按钮',
+        onClick: () => { setPill({ hidden: false }) },
+      }, '⌖')),
+    h('div', { className: 'cfl-dock2-tabs' },
+      h('div', { className: 'cfl-seg' },
+        segBtn('run', '执行', s.runs.length || null),
+        segBtn('assets', '产物'),
+        segBtn('workflows', '工作流'))),
+
+    h(SysStrip, { sys: s.sys, spark: s.spark, connected: s.connected }),
+    s.error ? h('div', { className: 'cfl-banner' }, h('b', null, '出错'), s.error) : null,
+
+    seg === 'assets'
+      ? h('div', { className: 'cfl-dock2-body' }, h(AssetsView, { s }))
+      : seg === 'workflows'
+        ? h('div', { className: 'cfl-dock2-body' }, h(WorkflowsView, { s, onBack: () => set({ wfPreview: null }) }))
+        : h('div', { className: 'cfl-dock2-run' },
+          // 执行列表：默认展开，可折起给详情腾地方；折叠状态不影响功能
+          h('div', { className: `cfl-dock2-list${listOpen ? '' : ' is-folded'}` },
+            h('button', {
+              type: 'button',
+              className: 'cfl-dock2-listhead',
+              onClick: () => setListOpen(!listOpen),
+            },
+            h('span', null, '执行记录'),
+            h('span', { className: 'cfl-dock2-count' }, `${s.runs.length}`),
+            h('span', { className: 'cfl-dock2-fold' }, listOpen ? '收起' : '展开')),
+            listOpen ? h('div', { className: 'cfl-dock2-listbody' }, h(Timeline, { s, onSelect })) : null),
+          h('div', { className: 'cfl-dock2-detail' }, h(Inspector, { run, detail, s }))))
 }
 
 function PanelIcon(props) {
@@ -426,4 +552,42 @@ class ErrorCatcher extends React.Component {
   static getDerivedStateFromError(err) { return { err } }
   componentDidCatch(err) { this.props.onError && this.props.onError(err) }
   render() { return this.state.err ? null : this.props.children }
+}
+
+/**
+ * 浮窗专用的边界。为什么必须有：
+ * 没有边界时，浮窗里的 Panel 一抛错，React 会把整棵子树卸掉 —— 界面上就是
+ * "点了完全没反应"，而且没有任何提示。用户遇到的就是这种沉默。
+ * 现在出错会把原因写在浮窗里，同时写进 .cache/client-diag.log。
+ */
+function ComfyFloatBoundary() {
+  const [err, setErr] = useState(null)
+  const onError = (e) => {
+    diag('panel.error', { msg: String((e && e.message) || e), stack: String((e && e.stack) || '').slice(0, 800) })
+    setErr(e)
+  }
+  if (err) {
+    return h('div', { className: 'cfl-root' },
+      h('div', { className: 'cfl-banner' },
+        h('b', null, '面板渲染失败'),
+        h('div', { style: { marginTop: '6px', whiteSpace: 'pre-wrap' } },
+          String((err && err.message) || err))))
+  }
+  return h(ErrorCatcher, { onError }, h(Panel, { compact: true }))
+}
+
+/** 右侧整列停靠用的边界：出错时把原因写在面板里，而不是让整列静默变白 */
+function DockBoundary() {
+  const [err, setErr] = useState(null)
+  const onError = (e) => {
+    diag('dock.error', { msg: String((e && e.message) || e), stack: String((e && e.stack) || '').slice(0, 800) })
+    setErr(e)
+  }
+  if (err) {
+    return h('div', { className: 'cfl-root' },
+      h('div', { className: 'cfl-banner' },
+        h('b', null, '面板渲染失败'),
+        h('div', { style: { marginTop: '6px', whiteSpace: 'pre-wrap' } }, String((err && err.message) || err))))
+  }
+  return h(ErrorCatcher, { onError }, h(DockPanel))
 }
