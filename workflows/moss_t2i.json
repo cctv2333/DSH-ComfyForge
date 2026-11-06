@@ -1,0 +1,170 @@
+{
+  "name": "moss_t2i",
+  "version": 1,
+  "title": "MOSS-Image SFT 文生图（int8 · 5.04GB，人物美学最佳）",
+  "description": "2026-11-06 用户判定：人物最漂亮、美学最好、最符合东亚人审美 —— 人像主力。官方模板设置：er_sde / CFG 2.5 / 25 步；latent 用 EmptyFlux2LatentImage；VAE 用 flux2-vae_small。另支持布局引导（画框定位置）与 4K token 长提示词，做多视图/排版时用它。",
+  "model": "moss_image_sft_int8_convrot.safetensors",
+  "native_mp": 1,
+  "recommended_sizes": [
+    {
+      "name": "square",
+      "width": 1024,
+      "height": 1024,
+      "note": "首选"
+    },
+    {
+      "name": "portrait",
+      "width": 1024,
+      "height": 1280,
+      "note": "竖图 1.3MP，官方支持到 2MP"
+    },
+    {
+      "name": "landscape",
+      "width": 1280,
+      "height": 1024,
+      "note": "横图 1.3MP"
+    }
+  ],
+  "bindings": {
+    "prompt": [
+      "4",
+      "text"
+    ],
+    "negative": [
+      "5",
+      "text"
+    ],
+    "width": [
+      "6",
+      "width"
+    ],
+    "height": [
+      "6",
+      "height"
+    ],
+    "steps": [
+      "7",
+      "steps"
+    ],
+    "seed": [
+      "7",
+      "seed"
+    ],
+    "filename_prefix": [
+      "9",
+      "filename_prefix"
+    ]
+  },
+  "randomize": [
+    "seed"
+  ],
+  "defaults": {
+    "prompt": "一张照片：年轻东亚女性站在海边，黄昏自然光，85mm 定焦，浅景深，皮肤质感真实，温柔的表情",
+    "negative": "nsfw, worst quality, bad anatomy, watermark, jpeg artifact",
+    "width": 1024,
+    "height": 1280,
+    "steps": 25,
+    "filename_prefix": "comfyforge/moss"
+  },
+  "workflow": {
+    "1": {
+      "class_type": "UNETLoader",
+      "inputs": {
+        "unet_name": "moss_image_sft_int8_convrot.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    "2": {
+      "class_type": "CLIPLoader",
+      "inputs": {
+        "clip_name": "qwen3.5_9b_w4a8_gptq.safetensors",
+        "type": "moss_image",
+        "device": "default"
+      }
+    },
+    "3": {
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "flux2-vae_small.safetensors"
+      }
+    },
+    "4": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "",
+        "clip": [
+          "2",
+          0
+        ]
+      }
+    },
+    "5": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "",
+        "clip": [
+          "2",
+          0
+        ]
+      }
+    },
+    "6": {
+      "class_type": "EmptyFlux2LatentImage",
+      "inputs": {
+        "width": 1024,
+        "height": 1280,
+        "batch_size": 1
+      }
+    },
+    "7": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "positive": [
+          "4",
+          0
+        ],
+        "negative": [
+          "5",
+          0
+        ],
+        "latent_image": [
+          "6",
+          0
+        ],
+        "seed": 0,
+        "steps": 25,
+        "cfg": 2.5,
+        "sampler_name": "er_sde",
+        "scheduler": "simple",
+        "denoise": 1
+      }
+    },
+    "8": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "7",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
+      }
+    },
+    "9": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": [
+          "8",
+          0
+        ],
+        "filename_prefix": "comfyforge/moss"
+      }
+    }
+  }
+}

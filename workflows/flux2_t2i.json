@@ -1,0 +1,185 @@
+{
+  "name": "flux2_t2i",
+  "version": 1,
+  "title": "FLUX.2 klein 9B 文生图（GGUF Q4_K_M · 5.28GB 主模型）",
+  "description": "本机实测：写实能力最强（皮肤纹理、发丝、光照衰减真实），但人物瑕疵多（雀斑/痣），要\"漂亮\"就往 prompt 里加 smooth skin, flawless, no freckles。用 Flux2Scheduler + SamplerCustomAdvanced；FLUX 系 cfg=1，不需要负面分支。",
+  "model": "flux-2-klein-9b-Q4_K_M.gguf",
+  "native_mp": 1,
+  "recommended_sizes": [
+    {
+      "name": "square",
+      "width": 1024,
+      "height": 1024,
+      "note": "原生 1MP"
+    },
+    {
+      "name": "portrait",
+      "width": 896,
+      "height": 1152,
+      "note": "竖图 1.03MP"
+    },
+    {
+      "name": "landscape",
+      "width": 1152,
+      "height": 896,
+      "note": "横图 1.03MP"
+    }
+  ],
+  "bindings": {
+    "prompt": [
+      "4",
+      "text"
+    ],
+    "width": [
+      "5",
+      "width"
+    ],
+    "height": [
+      "5",
+      "height"
+    ],
+    "steps": [
+      "5",
+      "steps"
+    ],
+    "seed": [
+      "7",
+      "noise_seed"
+    ],
+    "filename_prefix": [
+      "12",
+      "filename_prefix"
+    ]
+  },
+  "randomize": [
+    "seed"
+  ],
+  "defaults": {
+    "prompt": "a photorealistic portrait of a young woman on a beach at golden hour, natural sunlight, 50mm lens, detailed skin texture, smooth skin, flawless",
+    "width": 1024,
+    "height": 1024,
+    "steps": 20,
+    "filename_prefix": "comfyforge/flux2"
+  },
+  "workflow": {
+    "1": {
+      "class_type": "UnetLoaderGGUF",
+      "inputs": {
+        "unet_name": "flux-2-klein-9b-Q4_K_M.gguf"
+      }
+    },
+    "2": {
+      "class_type": "CLIPLoader",
+      "inputs": {
+        "clip_name": "qwen_3_8b_fp8mixed.safetensors",
+        "type": "flux2",
+        "device": "default"
+      }
+    },
+    "3": {
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "flux2-vae.safetensors"
+      }
+    },
+    "4": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "",
+        "clip": [
+          "2",
+          0
+        ]
+      }
+    },
+    "5": {
+      "class_type": "Flux2Scheduler",
+      "inputs": {
+        "steps": 20,
+        "width": 1024,
+        "height": 1024
+      }
+    },
+    "6": {
+      "class_type": "EmptyFlux2LatentImage",
+      "inputs": {
+        "width": 1024,
+        "height": 1024,
+        "batch_size": 1
+      }
+    },
+    "7": {
+      "class_type": "RandomNoise",
+      "inputs": {
+        "noise_seed": 0
+      }
+    },
+    "8": {
+      "class_type": "KSamplerSelect",
+      "inputs": {
+        "sampler_name": "euler"
+      }
+    },
+    "9": {
+      "class_type": "BasicGuider",
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "conditioning": [
+          "4",
+          0
+        ]
+      }
+    },
+    "10": {
+      "class_type": "SamplerCustomAdvanced",
+      "inputs": {
+        "noise": [
+          "7",
+          0
+        ],
+        "guider": [
+          "9",
+          0
+        ],
+        "sampler": [
+          "8",
+          0
+        ],
+        "sigmas": [
+          "5",
+          0
+        ],
+        "latent_image": [
+          "6",
+          0
+        ]
+      }
+    },
+    "11": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "10",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
+      }
+    },
+    "12": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": [
+          "11",
+          0
+        ],
+        "filename_prefix": "comfyforge/flux2"
+      }
+    }
+  }
+}

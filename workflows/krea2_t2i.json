@@ -1,0 +1,170 @@
+{
+  "name": "krea2_t2i",
+  "version": 1,
+  "title": "Krea-2 Turbo 文生图（nvfp4 · 7.15GB，8GB 显存可跑）",
+  "description": "本机实测：人像\"漂亮\"，比 FLUX.2 讨喜（瑕疵少），但细节略少。nvfp4 量化在 RTX 50 系原生支持，实测无明显质量损失。VAE 复用 qwen_image_vae。Turbo 用 8 步 cfg 1；想更细可上 12 步。",
+  "model": "krea2_turbo_nvfp4.safetensors",
+  "native_mp": 1,
+  "recommended_sizes": [
+    {
+      "name": "square",
+      "width": 1024,
+      "height": 1024,
+      "note": "首选"
+    },
+    {
+      "name": "portrait",
+      "width": 896,
+      "height": 1152,
+      "note": "竖图"
+    },
+    {
+      "name": "landscape",
+      "width": 1152,
+      "height": 896,
+      "note": "横图"
+    }
+  ],
+  "bindings": {
+    "prompt": [
+      "4",
+      "text"
+    ],
+    "negative": [
+      "5",
+      "text"
+    ],
+    "width": [
+      "6",
+      "width"
+    ],
+    "height": [
+      "6",
+      "height"
+    ],
+    "steps": [
+      "7",
+      "steps"
+    ],
+    "seed": [
+      "7",
+      "seed"
+    ],
+    "filename_prefix": [
+      "9",
+      "filename_prefix"
+    ]
+  },
+  "randomize": [
+    "seed"
+  ],
+  "defaults": {
+    "prompt": "a beautiful young woman portrait, soft natural light, 85mm lens, clean background, detailed eyes, smooth skin",
+    "negative": "worst quality, low quality, blurry, watermark, text",
+    "width": 1024,
+    "height": 1024,
+    "steps": 8,
+    "filename_prefix": "comfyforge/krea2"
+  },
+  "workflow": {
+    "1": {
+      "class_type": "UNETLoader",
+      "inputs": {
+        "unet_name": "krea2_turbo_nvfp4.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    "2": {
+      "class_type": "CLIPLoader",
+      "inputs": {
+        "clip_name": "qwen3vl_4b_int8_convrot.safetensors",
+        "type": "krea2",
+        "device": "default"
+      }
+    },
+    "3": {
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "qwen_image_vae.safetensors"
+      }
+    },
+    "4": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "",
+        "clip": [
+          "2",
+          0
+        ]
+      }
+    },
+    "5": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "",
+        "clip": [
+          "2",
+          0
+        ]
+      }
+    },
+    "6": {
+      "class_type": "EmptySD3LatentImage",
+      "inputs": {
+        "width": 1024,
+        "height": 1024,
+        "batch_size": 1
+      }
+    },
+    "7": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "positive": [
+          "4",
+          0
+        ],
+        "negative": [
+          "5",
+          0
+        ],
+        "latent_image": [
+          "6",
+          0
+        ],
+        "seed": 0,
+        "steps": 8,
+        "cfg": 1,
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "denoise": 1
+      }
+    },
+    "8": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "7",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
+      }
+    },
+    "9": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": [
+          "8",
+          0
+        ],
+        "filename_prefix": "comfyforge/krea2"
+      }
+    }
+  }
+}

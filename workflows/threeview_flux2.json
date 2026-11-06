@@ -1,0 +1,372 @@
+{
+  "name": "threeview_flux2",
+  "version": 1,
+  "title": "FLUX.2 三视图（参考锁角色 + ImageStitch 拼接，一条工作流出图）",
+  "description": "流程：MOSS/Krea2 先出正面基准图 -> 本工作流把基准图接到 ReferenceMultiLatent.images.image1 锁角色 -> 三条采样链分别出 front/side/back（共享同一 RandomNoise 保证一致）-> ImageStitch 拼两次 -> SaveImage。产出一张 2496x1216 的三视图。要换角色：改三个 CLIPTextEncode 的 text（10/20/30 号节点）与 LoadImage 的基准图。",
+  "model": "flux-2-klein-9b-Q4_K_M.gguf",
+  "native_mp": 1,
+  "recommended_sizes": [
+    {
+      "name": "threeview_3x1",
+      "width": 832,
+      "height": 1216,
+      "note": "三张 832x1216 横拼为 2496x1216"
+    }
+  ],
+  "bindings": {
+    "ref_image": [
+      "4",
+      "image"
+    ],
+    "seed": [
+      "6",
+      "noise_seed"
+    ],
+    "steps": [
+      "5",
+      "steps"
+    ],
+    "filename_prefix": [
+      "42",
+      "filename_prefix"
+    ]
+  },
+  "randomize": [
+    "seed"
+  ],
+  "defaults": {
+    "ref_image": "1793908820639_front_00001_.png",
+    "seed": 20261106,
+    "steps": 20,
+    "filename_prefix": "comfyforge/threeview/stitched"
+  },
+  "workflow": {
+    "1": {
+      "class_type": "UnetLoaderGGUF",
+      "inputs": {
+        "unet_name": "flux-2-klein-9b-Q4_K_M.gguf"
+      }
+    },
+    "2": {
+      "class_type": "CLIPLoader",
+      "inputs": {
+        "clip_name": "qwen_3_8b_fp8mixed.safetensors",
+        "type": "flux2",
+        "device": "default"
+      }
+    },
+    "3": {
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "flux2-vae.safetensors"
+      }
+    },
+    "4": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": "1793908820639_front_00001_.png"
+      }
+    },
+    "5": {
+      "class_type": "Flux2Scheduler",
+      "inputs": {
+        "steps": 20,
+        "width": 832,
+        "height": 1216
+      }
+    },
+    "6": {
+      "class_type": "RandomNoise",
+      "inputs": {
+        "noise_seed": 20261106
+      }
+    },
+    "7": {
+      "class_type": "KSamplerSelect",
+      "inputs": {
+        "sampler_name": "euler"
+      }
+    },
+    "10": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "front view, facing the viewer, arms relaxed at sides, the same chibi anime girl with long dark blue hair and an ahoge, big blue eyes, a white frilled maid headdress, a navy blue maid dress with a white apron and a blue ribbon at the collar, a small whale tail, chibi proportions, full body, standing straight, plain pure white background, no props, no decorations, clean anime lineart, cel shading, flat colors",
+        "clip": [
+          "2",
+          0
+        ]
+      }
+    },
+    "11": {
+      "class_type": "ReferenceMultiLatent",
+      "inputs": {
+        "positive": [
+          "10",
+          0
+        ],
+        "resolution": "keep resolution",
+        "vae": [
+          "3",
+          0
+        ],
+        "images.image1": [
+          "4",
+          0
+        ]
+      }
+    },
+    "12": {
+      "class_type": "BasicGuider",
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "conditioning": [
+          "11",
+          0
+        ]
+      }
+    },
+    "13": {
+      "class_type": "SamplerCustomAdvanced",
+      "inputs": {
+        "noise": [
+          "6",
+          0
+        ],
+        "guider": [
+          "12",
+          0
+        ],
+        "sampler": [
+          "7",
+          0
+        ],
+        "sigmas": [
+          "5",
+          0
+        ],
+        "latent_image": [
+          "11",
+          2
+        ]
+      }
+    },
+    "14": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "13",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
+      }
+    },
+    "20": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "right side profile view, facing right, the same chibi anime girl with long dark blue hair and an ahoge, big blue eyes, a white frilled maid headdress, a navy blue maid dress with a white apron and a blue ribbon at the collar, a small whale tail, chibi proportions, full body, standing straight, plain pure white background, no props, no decorations, clean anime lineart, cel shading, flat colors",
+        "clip": [
+          "2",
+          0
+        ]
+      }
+    },
+    "21": {
+      "class_type": "ReferenceMultiLatent",
+      "inputs": {
+        "positive": [
+          "20",
+          0
+        ],
+        "resolution": "keep resolution",
+        "vae": [
+          "3",
+          0
+        ],
+        "images.image1": [
+          "4",
+          0
+        ]
+      }
+    },
+    "22": {
+      "class_type": "BasicGuider",
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "conditioning": [
+          "21",
+          0
+        ]
+      }
+    },
+    "23": {
+      "class_type": "SamplerCustomAdvanced",
+      "inputs": {
+        "noise": [
+          "6",
+          0
+        ],
+        "guider": [
+          "22",
+          0
+        ],
+        "sampler": [
+          "7",
+          0
+        ],
+        "sigmas": [
+          "5",
+          0
+        ],
+        "latent_image": [
+          "21",
+          2
+        ]
+      }
+    },
+    "24": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "23",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
+      }
+    },
+    "30": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "back view, seen from behind, facing away, the same chibi anime girl with long dark blue hair and an ahoge, big blue eyes, a white frilled maid headdress, a navy blue maid dress with a white apron and a blue ribbon at the collar, a small whale tail, chibi proportions, full body, standing straight, plain pure white background, no props, no decorations, clean anime lineart, cel shading, flat colors",
+        "clip": [
+          "2",
+          0
+        ]
+      }
+    },
+    "31": {
+      "class_type": "ReferenceMultiLatent",
+      "inputs": {
+        "positive": [
+          "30",
+          0
+        ],
+        "resolution": "keep resolution",
+        "vae": [
+          "3",
+          0
+        ],
+        "images.image1": [
+          "4",
+          0
+        ]
+      }
+    },
+    "32": {
+      "class_type": "BasicGuider",
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "conditioning": [
+          "31",
+          0
+        ]
+      }
+    },
+    "33": {
+      "class_type": "SamplerCustomAdvanced",
+      "inputs": {
+        "noise": [
+          "6",
+          0
+        ],
+        "guider": [
+          "32",
+          0
+        ],
+        "sampler": [
+          "7",
+          0
+        ],
+        "sigmas": [
+          "5",
+          0
+        ],
+        "latent_image": [
+          "31",
+          2
+        ]
+      }
+    },
+    "34": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "33",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
+      }
+    },
+    "40": {
+      "class_type": "ImageStitch",
+      "inputs": {
+        "image1": [
+          "14",
+          0
+        ],
+        "image2": [
+          "24",
+          0
+        ],
+        "direction": "right",
+        "match_image_size": true,
+        "spacing_width": 0,
+        "spacing_color": "white"
+      }
+    },
+    "41": {
+      "class_type": "ImageStitch",
+      "inputs": {
+        "image1": [
+          "40",
+          0
+        ],
+        "image2": [
+          "34",
+          0
+        ],
+        "direction": "right",
+        "match_image_size": true,
+        "spacing_width": 0,
+        "spacing_color": "white"
+      }
+    },
+    "42": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": [
+          "41",
+          0
+        ],
+        "filename_prefix": "comfyforge/threeview/stitched"
+      }
+    }
+  }
+}
