@@ -83,9 +83,30 @@ function openWorkbench(ctx) {
   return false
 }
 
+/**
+ * 安全注册：DSH 版本之间 slot 名字会变（新机器上 0.2.0 就是这种情况）。
+ * 任何一处 inject/register 抛错，都只应该"少一个入口"，绝不能让整个 apply 失败——
+ * apply 一失败，面板就完全不出现，而且界面上不会说为什么。所以逐个包起来，并记日志。
+ */
+function trySlot(ctx, slot, opts, Comp) {
+  try {
+    if (!ctx || !ctx.slots || typeof ctx.slots.inject !== 'function') {
+      diag('slot.skip', { slot, why: 'no-slots' })
+      return false
+    }
+    ctx.slots.inject(slot, () => ctx.slots.register({ name: slot, ...opts }, Comp))
+    diag('slot.ok', { slot })
+    return true
+  } catch (e) {
+    diag('slot.fail', { slot, error: String((e && e.message) || e).slice(0, 120) })
+    return false
+  }
+}
+
 function apply(ctx) {
   UI_CTX = ctx
   try { diagInstall() } catch { /* ignore */ }
+  let registered = 0
   try {
     const get = typeof ctx.get === 'function' ? ctx.get.bind(ctx) : null
     diag('apply', {
@@ -97,31 +118,22 @@ function apply(ctx) {
   } catch { /* ignore */ }
 
   // 左栏入口：主页面板（大屏看画布/大图时用）
-  ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
-    name: 'sidebar.panellist',
-    id: PANEL_ID,
-    order: 30,
-    label: 'Comfy 工作台',
-  }, PanelIcon))
+  if (trySlot(ctx, 'sidebar.panellist', { id: PANEL_ID, order: 30, label: 'Comfy 工作台' }, PanelIcon)) registered++
 
-  ctx.slots.inject('main', () => ctx.slots.register({
-    name: 'main',
-    key: PANEL_ID,
-  }, ComfyPanelBoundary))
+  if (trySlot(ctx, 'main', { key: PANEL_ID }, ComfyPanelBoundary)) registered++
 
   // 右侧整列停靠（主形态）
   try { registerTab(ctx, 0) } catch { /* ignore */ }
 
-  // 右下角卡片 + 抽屉（入口 / 退路）
+  // 右下角卡片（入口 / 退路）
   try {
     const FloatPanel = makeFloatPanel(ctx, () => openWorkbench(ctx))
-    ctx.slots.inject('shell.overlay', () => ctx.slots.register({
-      name: 'shell.overlay',
-      id: 'comfy-live-float',
-      order: 55,
-      label: 'Comfy 工作台入口',
-    }, FloatPanel))
+    if (trySlot(ctx, 'shell.overlay', { id: 'comfy-live-float', order: 55, label: 'Comfy 工作台入口' }, FloatPanel)) registered++
   } catch { /* 没有 shell.overlay 也还有左栏入口 */ }
+
+  // 一个入口都没注册上，说明这台机器的 DSH 版本和插件对不上：
+  // 至少把事实写进诊断日志，而不是"面板没出现、什么都没说"。
+  try { diag('apply.done', { registered, slots: ['sidebar.panellist', 'main', 'shell.overlay'] }) } catch { /* ignore */ }
 
   try {
     boot()

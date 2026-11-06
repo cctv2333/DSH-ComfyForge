@@ -185,7 +185,8 @@ console.log(`\n体检：${profile.label}`);
 console.log(`  时长 ${SECONDS}s → ${est.frames} 帧${est.chunks ? ` / ${est.chunks} 个二采块` : ''}`);
 console.log(`  权重合计 ${(weightMB / 1024).toFixed(1)} GB（要 staged，不是一次全驻留）\n`);
 for (const r of rows) {
-  const mark = r.ok === true ? '✓' : r.ok === false ? '✗' : '!';
+  // 三态：✓ 舒适 / ⚠ 硬线之上但不舒适（会靠页面文件）/ ✗ 必爆
+  const mark = r.ok === false ? '✗' : r.soft === false ? '⚠' : r.ok === null ? '!' : '✓';
   console.log(` ${mark}  ${pad(r.name, 22)} 当前 ${pad(r.have, 22)} 需要 ${r.need}`);
 }
 if (pagefile) console.log(`\n  页面文件 ${pagefile.name} 已分配 ${(pagefile.allocatedMB / 1024).toFixed(1)} GB，已用 ${(pagefile.usedMB / 1024).toFixed(1)} GB`);

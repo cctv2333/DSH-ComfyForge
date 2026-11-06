@@ -1,0 +1,22 @@
+subject_definitions:
+<Subject 1> is the chibi anime girl in <Picture 1>, with very long dark navy-blue hair past her hips, blunt bangs, two long side locks, one thin ahoge, large round blue eyes with twin highlights, a white frilled maid headband, a navy-blue maid dress with puff sleeves, a white collar with a light-blue ribbon bow, white lace frills on the shoulders, a white apron with a scalloped hem, white cuffs with one dark button, white ankle socks and dark navy Mary Jane shoes. Her proportions stay at roughly four heads.
+<Subject 2> is the small wooden kitchen around her in <Picture 1>: a bamboo steamer on a low wooden table, a pale paper lantern overhead, a dark timber wall, and a stone floor.
+
+summary:
+[reference generation] A five-second three-shot kitchen scene in which <Subject 1> lifts the bamboo steamer lid, speaks one short line to the camera, and finally presents the steamer with both hands while keeping her lips closed. <Subject 1> keeps exactly the appearance defined above; <Subject 2> keeps the same layout, materials, and lantern position.
+
+retention_analysis:
+<Subject 1> (appears in [Shot 1], [Shot 2], [Shot 3]): fully_preserved - hairstyle, eye colour, headband, dress, apron, socks, and shoes are retained without modification.
+<Subject 2> (appears in [Shot 1], [Shot 2], [Shot 3]): fully_preserved - the steamer, table, lantern, timber wall, and stone floor keep their positions and materials.
+
+detailed_description:
+The target video is a clean 2D cel-shaded anime illustration with flat colour bands, thin dark lineart, and soft even lighting that comes from the pale paper lantern.
+[Shot 1] A medium shot frames <Subject 1> standing behind the low wooden table in <Subject 2>, both hands resting on the bamboo steamer lid. She lifts the lid with her right hand and sets it down at the left edge of the table. Steam rises and drifts across her apron.
+[Shot 2] At 00:01.600, the camera cuts to a medium close shot of <Subject 1>. She lifts her gaze from the steamer to the camera, her mouth opens, and <Subject 1> (S1), a young woman with a light, even voice, says: <d>[Chinese] 刚好五个。</d> Her lips close after the last syllable.
+[Shot 3] At 00:03.400, the camera cuts to a close-up of <Subject 1>. She lifts the bamboo steamer with both hands to chest height, holds it steady, and smiles with her lips together. Her mouth stays fully closed for the entire shot while the steam keeps rising between her hands.
+
+overall_soundscape:
+Quiet indoor kitchen room tone with a steady low hiss of steam from the bamboo steamer. A soft wooden knock is heard once as the lid is set down.
+
+non_diegetic_music:
+A sparse guzheng line at a slow tempo that fades out over the final second.

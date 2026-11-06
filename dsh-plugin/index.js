@@ -1855,6 +1855,60 @@ export function apply(ctx, config = {}) {
       },
     },
     {
+      // 给「面板渲染不出来」用的：DSH 自己的 HTTP 服务在跑，这个 URL 就能打开。
+      // 用户不用找文件、不用开 DevTools，浏览器里看一段文本复制给我们就够。
+      // 设计约束：**绝不能因为诊断而失败**——任何一步出错都只让对应字段变成错误文本。
+      kind: 'exact',
+      path: `${PREFIX}/health`,
+      handler: async (req, res) => {
+        const started = Date.now()
+        const out = { ok: true, at: new Date().toISOString(), plugin: 'dsh-comfy-live' };
+        const safe = async (key, fn) => { try { out[key] = await fn() } catch (e) { out[key] = `ERR: ${String(e?.message || e).slice(0, 200)}` } };
+
+        await safe('paths', async () => ({
+          projectRoot,
+          comfyRoot: hub.comfyRoot || '(未解析)',
+          projectRootIgnored: hub.projectRootIgnored || '',
+          node: process.version,
+          platform: `${process.platform} ${process.arch}`,
+        }));
+        await safe('client', async () => {
+          // 浏览器跑的是 client.js；它和 client-src 不同步时面板会表现成"旧代码"
+          const dir = join(projectRoot, 'dsh-plugin')
+          const disk = readFileSync(join(dir, 'client.js'), 'utf8')
+          const files = readdirSync(join(dir, 'client-src')).filter((f) => f.endsWith('.js')).sort()
+          const body = files.map((f) => `// ─── ${f} ${'─'.repeat(Math.max(0, 62 - f.length))}\n${readFileSync(join(dir, 'client-src', f), 'utf8').trimEnd()}\n`).join('\n')
+          const expected = `/**\n * Comfy 实时台 — Client 半（由 client-src/*.js 拼装，勿直接编辑本文件）\n * 生成：node build-client.mjs\n */\nwindow.__ModuleLoader__.load({\n  id: '@local/dsh-comfy-live',\n  factory(require) {\n    const React = require('react')\n    const h = React.createElement\n    const { useCallback, useEffect, useMemo, useRef, useState } = React\n\n${body.split('\n').map((l) => (l ? `    ${l}` : '')).join('\n')}\n\n    return { inject: ['slots', 'layout'], apply }\n  },\n})\n`
+          return {
+            inSync: expected === disk,
+            bytes: disk.length,
+            parts: files.length,
+            hint: expected === disk ? 'ok' : 'client.js 落后于 client-src：在 dsh-plugin/ 里跑 node build-client.mjs，然后刷新页面',
+          }
+        });
+        await safe('comfy', async () => {
+          const s = await (await fetch(`${hub.comfy}/system_stats`, { signal: AbortSignal.timeout(4000) })).json()
+          return { ok: true, version: s?.system?.comfyui_version, vramFreeGB: +((s?.devices?.[0]?.vram_free || 0) / 1073741824).toFixed(2) }
+        });
+        await safe('host', async () => ({
+          connected: hub.connected,
+          runs: hub.runs?.size ?? null,
+          clients: hub.clients?.size ?? null,
+          origin: hub.origin || '',
+        }));
+        await safe('clientDiag', async () => {
+          // 浏览器那半写回来的最后几行：里面会有 slot.ok / slot.fail / apply
+          let text = ''
+          try { text = readFileSync(join(projectRoot, '.cache', 'client-diag.log'), 'utf8') } catch { /* 没写过 */ }
+          return text.split('\n').filter(Boolean).slice(-30)
+        });
+
+        out.elapsedMs = Date.now() - started
+        out.howToReadIt = '把这一页全部复制给开发者即可；client.inSync 必须是 true，clientDiag 里要能看到 slot.ok';
+        return hub.send(res, 200, out)
+      },
+    },
+    {
       // 客户端没有 DevTools，界面出问题时只能靠它自己把事实写回来。
       // GET 读回日志；POST 追加一行。落盘在 <projectRoot>/.cache/client-diag.log。
       kind: 'exact',
