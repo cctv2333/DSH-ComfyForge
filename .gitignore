@@ -36,6 +36,7 @@ tools/experiments/
 # 内部复盘与交接（含对话原话、客户信息，不公开）
 docs/交接报告-*.md
 docs/工程复查-*.md
+docs/*交接-*.md
 
 # Python 编译产物
 __pycache__/

@@ -51,10 +51,12 @@ ComfyUI 只把 `execution_*` 事件发给**提交者的 client_id**，所以任�
 ComfyUI 发给它的事件正好落到它手里。
 
 - 效果：节点图按真实 API 图逐个点亮（灰=未跑、虚线=命中缓存、蓝=在跑、绿=完成、红=失败）、进度计数、**实时预览帧**、产物缩略图；
-- 顺手解决两件长期痛点：每次执行自动把 API 图转成 UI 格式写进 `ComfyUI/user/default/workflows/`（在 ComfyUI 里可打开可重跑），
+- 顺手解决两件长期痛点：每次执行自动把 API 图转成 UI 格式写进 `ComfyUI/user/default/workflows/_运行记录/`（在 ComfyUI 里可打开可重跑，只留最近 24 份），
   以及执行记录落盘 `runs/live/<prompt_id>.json`；
 - 调试过的一个真 bug：同一 sid 出现两条连接时后一条会顶掉前一条，任意一条断开又会把 sid 整个 pop 掉 →
   表现为「面板开着但永远只有事后记录」。修法是连接带代数、提交前 `ensure()`、3 秒没等到 `execution_start` 主动重连。
+
+![右侧栏工作台：执行 / 产物库 / 工作流三档](docs/img/rightbar-2026-11-05.png)
 
 ### 2. 视频二采配方：8GB 显存出 1216×704 带原生音轨
 
@@ -258,7 +260,9 @@ mcp/tools/    system / generate / view / edit / library / media + ctx.mjs（共�
 workflows/    模板（纯 JSON，可手改，不含权重）
 ui/           本地看板（旧版，已被实时面板取代，保留兼容）
 dsh-plugin/   DSH 插件：Comfy 实时台（Host 半 + Client 半）
-tools/        CLI 工具：preflight 体检 / shots 分镜切分 / storyboard 分镜与提示词 / prompt-lint 校验 / sweep 抽卡 …
+tools/        CLI 工具：preflight 体检 / shots 分镜切分 / storyboard 分镜与提示词 / prompt-lint 校验 / sweep 抽卡 /
+              cleanup 清垃圾 / publish-workflows 把模板发布成 ComfyUI 侧边栏能点开的那几份 /
+              workflow-diff 逐节点对比两份工作流 / plugin-doctor 面板出不来时的一键诊断 / fetch-hf-model 从镜像拉整套 HF 目录
 docs/         设计文档、实测报告、已知问题
 prompts/      提示词格式规范与范例
 runs/         运行记录（生成产物，不入库）
@@ -278,6 +282,8 @@ runs/         运行记录（生成产物，不入库）
 | [`docs/视频生成流程.md`](docs/视频生成流程.md) | 从一张分镜参考图到一条带音轨成片的完整脉络与判断点 |
 | [`docs/Comfy实时台-设计与实现.md`](docs/Comfy实时台-设计与实现.md) | 为什么旧看板必然只能「事后」，以及现在怎么拿到节点级直播 |
 | [`docs/提示词校验与抽卡.md`](docs/提示词校验与抽卡.md) | 发出去之前怎么自查提示词，抽卡怎么排序 |
+| [`docs/模型选型-2026-11-06.md`](docs/模型选型-2026-11-06.md) | 四种模型同提示词同种子实测对比，以及**用户审美判定**（MOSS > Krea-2 > FLUX.2 ≫ SDXL）与 SDXL 崩在哪 |
+| [`docs/右侧栏接入-现状与下一步.md`](docs/右侧栏接入-现状与下一步.md) | 面板注册进 DSH 右侧栏踩到的两条硬约束（id 唯一、guide 的 title 必须是函数） |
 | [`prompts/h3-r2v-提示词格式.md`](prompts/h3-r2v-提示词格式.md) | 六段式提示词规范（`subject_definitions` / `[Shot]` 时间码 / 声音同步） |
 
 ## 已知问题
@@ -309,6 +315,29 @@ runs/         运行记录（生成产物，不入库）
 
 ## 更新记录
 
+- **0.3.4** —— 修一条**只在别人机器上**才出现的问题，外加三件让工作流本身可维护的工具（回归：unit 29/29）。
+  - **跨机器的面板渲染失败**：`cordis.patch.yml` 里写死了开发机的 `comfyRoot` / `projectRoot`。换台机器这两条
+    「格式合法但不存在」，于是 `runs/live`、`workflows/`、`.cache/client-diag.log` 全落在空气里 ——
+    面板起来是空壳，**诊断日志自己也丢**，界面上一点痕迹都没有。DSH 只会说 `{slot} 渲染失败：`，
+    而它把「没装上」和「装上了、然后抛了」分得很清，这句属于后者。
+    现在：路径留空自动探测（`projectRoot` 回退到插件目录上一级、`comfyRoot` 从 `/system_stats` 的 `argv[0]` 反推）；
+    配置里写了但**不像本仓库**（没有 `mcp/server.mjs` 也没有 `workflows/`）就忽略并回退；
+    `noteOrigin()` 改用它解析后的路径（原来用原始配置值，那个文件也写丢了）；
+    前端 `diag()` 写不回 Host 时不再静默 —— 内存留一份 + 控制台喊一句，`window.__COMFY_LIVE_DIAG__` 可查。
+    新增 `tools/plugin-doctor.mjs`：11 项检查一条命令给结论。
+  - **`mcp/lib/uitograph.mjs`**：API 图 → UI 图的转换原来有两份实现（插件里一份、`to-ui-workflow.mjs` 一份），
+    现在合成一份并在转换后自检（widget 位序、连线两端、节点类型是否都在 `/object_info` 里）。
+  - **`tools/publish-workflows.mjs`**：「我说存好了」和「你在 ComfyUI 侧边栏看得见」是两件事 ——
+    模板在 `workflows/`（API 格式），侧边栏只读 `<ComfyUI>/user/default/workflows/` 且要 UI 格式。
+    这个脚本负责那一节：固定几份、中文名带编号、转换前先按 `defaults` 填好真实提示词。
+  - **`tools/workflow-diff.mjs`**：逐节点对比两份工作流，抓「改了但没人告诉你」的静默差异
+    （`POST /prompt` 只校验节点类型/必填/类型，查不出接错槽、悬空节点）。严重度 `slot > input > value > weak`。
+  - **`tools/cleanup.mjs`**：分三档清派生垃圾（缓存 / 重复落盘 / 实验产物），默认 dry-run，只动可重算的东西。
+  - **视频音频是谐波不是声音**（根因）：二采用独立的 `BasicScheduler(steps=4, denoise=0.35)` 会把 35% 噪声
+    重新灌进整个 AV latent，音频被毁、只剩 1230Hz 整数倍谐波。改用 `SplitSigmas` 8+4 后过零率 0.013 → 0.063，
+    与用户自己的成片（0.045–0.122）同档。这条**连续误判了 4 次**才定位，过程写进 `docs/journal/BUGLOG.md`（不入库）。
+  - 新模板：`moss_t2i` / `krea2_t2i` / `flux2_t2i` 三套文生图，以及 `threeview_flux2` ——
+    **一条工作流**出正/侧/背三视图并用 `ImageStitch` 拼成 2496×1216（三条采样链共享同一个 `RandomNoise`）。
 - **0.3.3** —— **纯结构重构，行为不变**（回归：selftest 80/80、unit 21/21）。
   `server.mjs` 从 2,100 行拆成 81 行装配层 + `mcp/tools/` 下 6 个域文件（system / generate / view / edit / library / media）
   加一个 `ctx.mjs` 共享上下文。注册点数仍是 33，`server.mjs` 里 0。
