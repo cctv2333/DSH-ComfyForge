@@ -1,110 +1,219 @@
-# H3 r2v 提示词格式（从两份一手样本反推）
+# H3 提示词格式（官方协议为准）
 
-来源（都在本机，可直接对照）：
-
-1. `prompts/examples/黑鹤派-流萤做饭-15s-5镜.txt` — 11,270 字，15s / 5 镜，进阶版
-2. `prompts/examples/官方模板-双人对战-5s.txt` — 1,091 字，5s，最小版（随 latent 放大节点附带的官方模板）
-
-两份**同构**：先是主体/资产定义，中间是动作与镜头，末尾固定两段 `overall_soundscape:` 和 `non_diegetic_music:`。
-差别只在进阶版多了 `summary`、`retention_analysis`、`[Shot N]` 分镜与时间码。
+> **本文件 2026-11-06 重写。**
+> 上一版是从我们手上的两份样本反推出来的，有三处与官方规范冲突（详见
+> [`docs/H3-官方协议对齐报告-2026-11-06.md`](../docs/H3-官方协议对齐报告-2026-11-06.md)）。
+> 现在以官方为准，样本降级为「实例」。
+>
+> **一手来源**（随官方仓库发布，不是社区猜测）：
+> `MiniMax-AI/MiniMax-H3/skills/h3-prompt-writing/references/`
+> · `base-en.txt` — T2VA / I2VA / FL2VA / L2VA
+> · `ref-en.txt` — 全参考模式（Ref2VA）六段式
+>
+> 本文标注约定：**【官方】** = 一字不差来自上面两份；**【工程】** = 我们自己的经验，不是协议。
 
 ---
 
-## 一、进阶版的六段骨架
+## 一、两种结构（字段名与顺序固定）
+
+**三段式**（无参考图 / 首帧 / 首末帧 / 末帧）：
+
+```
+integrated_multimodal_description:
+overall_soundscape:
+non_diegetic_music:
+```
+
+**六段式**（全参考，我们用二采时就是这条）：
 
 ```
 subject_definitions:
-<picture 1> 是什么（参考图本身）
-<subject 1> 是角色（身份 + 外观清单 + 媒介声明 + 本片增删）
-<subject 2> 是环境
-<subject 3> 是道具/关键物件
-
 summary:
-[reference generation] 一句话说清时长、主体、环境、动作的严格顺序、物理约束
-
 retention_analysis:
-<subject n> (appears in [Shot 1] through [Shot N]): fully_preserved / partially_preserved - 为什么
-<picture 1> (identity anchor for all shots): fully_preserved - 它锚定什么
-
 detailed_description:
-[全局风格/运镜/约束段]
-[Shot 1] 景别机位 … Hand assignment … 必须做到什么程度 … 表情 … Sound sync …
-[Shot 2] At 00:03.000, …
-[Shot 3] At 00:05.500, …
-…
-
 overall_soundscape:
-逐镜声音事件清单
-
 non_diegetic_music:
-BPM + 乐器 + 卡点 + 收尾
 ```
 
-段标题一律 **小写 + 冒号**，单独占一行；`<Picture n>` / `<Subject n>` 是**先定义后引用**的占位符，正文里反复引用同一个符号，模型因此知道"这个符号指同一张图的同一个东西"。
+顺序不能换、不能加段、不能少段。**H3 没有负向栏**，不要写 `negative_prompt` / `negative`。
 
-## 二、每段到底在约束什么
+---
 
-| 段 | 实际作用 | 不写会怎样 |
-|---|---|---|
-| `subject_definitions` | 把图片变成一个可被文字引用的实体；角色条目里逐项写发色/瞳色/配饰/服装，是为了让二采精修时**有细节可重建** | 模型自由发挥，跨镜换人 |
-| `summary` | 给全局的"动作顺序 + 物理规则" | 动作乱序、道具乱飞 |
-| `retention_analysis` | 显式声明"哪些必须保住、哪些允许变" | 它会把你没写的东西当可改 |
-| `detailed_description` 的全局段 | 定画面语言（写实 vs 赛璐璐）、剪辑节奏、总禁令 | 风格漂移 |
-| `[Shot N]` 块 | 分镜：景别机位 + 手分工 + 完成度 + 表情 + 声音 | 一手多物、手崩、动作半途而废 |
-| `overall_soundscape` | 逐镜音效清单，且要求"与动作同时" | 音画不同步、乱加音效 |
-| `non_diegetic_music` | 音乐（BPM、乐器、卡点、终止） | 背景音发闷或与剪辑点无关 |
+## 二、图片对齐指令行（只有首帧/首末帧/末帧模式才有）【官方】
 
-## 三、从样本里提炼出的硬规则（都有一手出处）
+必须是**第一行**，后面接**一个空行**，再进正文。句式固定：
 
-1. **媒介声明写进角色条目**：`3D-rendered-2D-anime ("cel-shaded") look: flat cel color bands, crisp outlines, very simple anime faces … no realistic human facial anatomy`。先把"不要写实脸"钉死，比在负面里写 ten times 更有效。
-2. **手：每镜必写 `Hand assignment`**，且写"整镜不变"（`Hand assignment for the whole shot:`），左手做什么、右手做什么、什么时候松手。进阶版几乎每镜都重复"她有且只有两只手"（`exactly two hands`），并在违规处点名（`never render a third hand, extra fingers, or duplicated hands`）。
-3. **绝对化 + 否定列举**：`EVERY piece`、`ALL the diced pieces`、`no half-cut slices, no whole chunks`、`not one piece is left on the board`。对"切完/倒完"这类**完成度**动作，只写"切开"会让模型演一半。
-4. **物理约束要显式**：`every prop is released before the same hand takes the next one`、`no bowl, bottle, knife, board, or plate ever enters the wok`。
-5. **时间码**：第 1 镜不写（默认 00:00），第 2 镜起 `At 00:03.000,`；末镜写 `hold … until 00:15.000`。切点不等距（本例 0 / 3.0 / 5.5 / 10.0 / 12.5，单镜 2.5–4.5s）。
-6. **每个动作都配一条 `Sound sync`**，并强调同步关系：`exactly when the blue flame blooms`、`the instant the vegetables touch the oil`、`never play before or after their matching visual`。
-7. **表情单独交代**，且与镜头情绪对齐；末镜常写"眼睛睁开"（`eyes OPEN`）——因为模型爱在结尾闭眼/眯眼。
-8. **长度密度**：15s / 5 镜用 11,270 字，约 2,200 字/镜。官方最小版 5s 用 1,091 字，约 220 字/s。**进阶版的密度是给二采准备的**——一采在 608×352 上看不出细节，二采要靠这些词把纹理重建出来。
+- 首帧：`For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.`
+- 首末帧：`How the reference pictures align with the target video — Picture 1 (from Shot 1) aligns with the 0.00-second mark of the target video; Picture 2 (from Shot N) aligns with the S.SS-second mark of the target video.`
+- 末帧：`How the reference pictures align with the target video — <Picture 1> (from [Shot N]) aligns with the S.SS-second mark of the target video.`
+- 纯文生：**没有**这一行。
 
-## 四、可直接填空的模板
+---
+
+## 三、分镜与切点【官方】
+
+- `[Shot 1]` **不写时间码**
+- 第二镜起：`[Shot N] At 00:03.500, ...`，**严格递增**、且落在时长内
+- 普通切换：`the camera cuts to` / `the shot transitions to` / `the shot changes to`
+- 只有明确要求才用 cross-dissolve / fade / wipe
+- 切点必须带来新信息（主体、空间、状态、视角、时间）。**只是景别或轻微角度变化，优先用运镜**
+
+---
+
+## 四、运镜 = 类型 + 幅度 + 速度【官方】
+
+类型：`Zoom In/Out`、`Push In/Pull Out`、`Pan L/R`、`Truck L/R`、`Tilt Up/Down`、`Pedestal Up/Down`、`Arc Shot`、`Tracking Shot`、`Static Shot`、`Shake Slightly/Strongly`、`POV`、`Roll Clockwise/Counterclockwise`
+幅度：`with small amplitude` / `with large amplitude`（中等就省略）
+速度：`at slow speed` / `at fast speed`（常速就省略）
+
+写成自然动作句：
+
+```
+The camera pushes in with small amplitude at slow speed toward the folded letter in her hands.
+```
+
+> 注意 `Tilt Down` 是机身不动、镜头下转；整机下降是 `Pedestal Down`。这两个常被写混。
+
+---
+
+## 五、对白、声源、跨切点【官方】
+
+- 会发声的人给稳定 ID：`(S1)` `(S2)`；多人齐声 `(S1,S2)`；**不发声的人不给编号**；同一人跨镜同一 ID
+- **ID、身份描述、动作、语气全写在 `<d>` 外面**；`<d>` 里只有语言标签 + 逐字原文：
+
+```
+The young woman with a quiet, breathy voice (S1) says: <d>[English] I get off at the next station.</d>
+```
+
+- 画外音：固定短语 `says in an off-screen voiceover`，**后面紧接**说明画内人物嘴闭合
+- 跨切点同一句：两段连接处都加 `<scenetrans>` 并明确音频连续
+- 被片尾截断：`<cutoff>`
+- 画面可见文字：用**英文双引号**逐字保留 → `A red neon sign reading "营业中" glows above the doorway.`
+- 听不清：写 `[unclear]`，**不要猜、不要改写**
+
+---
+
+## 六、两条声音字段的职责（最容易写错）【官方】
+
+| 字段 | 写什么 | 不许写 | N/A 条件 |
+|---|---|---|---|
+| `overall_soundscape` | 1–4 句，**整段**环境声/物理动作声/非语言人声的**概括** | 对白、歌唱、有源音乐；**逐镜同步的具体音效**（那些必须留在正文对应镜头里） | 只有明确要求**全片完全静音** |
+| `non_diegetic_music` | 1–3 句，乐器、速度、节奏、强弱变化 | **抽象情绪词**；解释配乐的情感作用；角色能听见的音乐（那是 diegetic，写进正文） | 没有非叙事配乐时写 `N/A` |
+
+> **上一版我们把 `overall_soundscape` 写成了「逐镜音效清单」，这是与官方直接冲突的。**
+> 正确写法是一段概括：
+>
+> ```
+> overall_soundscape: Steady rain taps against the café windows while low room ambience continues underneath.
+> ```
+>
+> 逐镜的「翻炒声在点火那一下」「刀落砧板」这类，写在对应 `[Shot N]` 的正文里。
+
+---
+
+## 七、参考标签与保留分析（六段式）【官方】
+
+四类标签，**分配后含义跨六段保持一致**：
+
+| 标签 | 指什么 |
+|---|---|
+| `<Subject N>` | 可复用的可见内容（人、动物、物件、场景、服装、风格、动作…） |
+| `<Picture N>` | 作为**具体帧**或构图锚的参考图 |
+| `<Video N>` | 整条视频的结构/编辑/延续源 |
+| `<Audio N>` | 音频信号（复制或参考） |
+
+**`<Picture N>` 只在它本身充当某镜首帧/关键帧/末帧/构图锚时才单列一条。**
+只是用来定义角色/场景/服装/风格的，**不要把图单列**，把图源写进对应 `<Subject N>` 里：
+
+```
+<Subject 1> is the young woman in <Picture 1>, with long dark hair and a blue cardigan.
+```
+
+`retention_analysis` 每行一个标签 + **逗号列举**出现的镜号 + 固定标记：
+
+```
+<Subject 1> (appears in [Shot 1], [Shot 3]): fully_preserved - identity and outfit retained.
+```
+
+| 可见内容标记 | 音频标记 |
+|---|---|
+| `fully_preserved` | `fully_copy` |
+| `partially_preserved` | `partially_copy` |
+| `attribute_transfer` | `reference` |
+| `weak_reference` | `weak_reference` |
+
+`summary` 用方括号任务类型开头：`[reference generation]`、`[keyframe completion]`、`[video editing]`、`[video continuation]`、`[audio reuse]`、`[audio reference]`；多种关系用 ` + ` 连接。
+
+---
+
+## 八、篇幅【官方】
+
+- `detailed_description`（生成任务）**通常 350–500 英文词**；对白密集时优先装下完整发话时间线，不机械凑字数
+- 风格总述放在 `[Shot 1]` **之前**，一到两句英文
+- 单镜不代表可以写短；按信息量分配
+
+> 【工程】我们那份 15 秒 5 镜、11,270 字的样本，密度是官方指引的几倍。
+> 它可能是好片子，但**它不是规范**。上一版把它写成「进阶版密度」并给了「给二采准备」的解释，
+> 那个解释是我们编的。要照它写可以，但要清楚这是实验选择。
+
+---
+
+## 九、可直接填空的六段模板（官方结构）
 
 ```
 subject_definitions:
-<Picture 1> is the reference image: {这张图是什么——三视图/正脸/场景照}.
-<Subject 1> is {角色名/身份} in <Picture 1>: {体型与比例；发型与发色；瞳色；头饰；服装逐件}。本片在保留 <Picture 1> 全部标志元素的前提下，新增 {本片变化，如围裙}。媒介与风格：{cel-shaded / 写实 / 定格} —— {具体到"平涂色块/锐利描边/面部极简"}，不要写实人脸解剖。
-<Subject 2> is {环境}：{材质、光源方向、关键陈设}.
-<Subject 3> is {道具/关键物件}：{外形、状态、片中如何变化}.
+<Subject 1> is {角色} in <Picture 1>: {体型；发型发色；瞳色；头饰；服装逐件}。本片新增 {变化}。
+<Subject 2> is {环境} in <Picture 1>: {材质、光源方向、关键陈设}。
+<Subject 3> is {道具}: {外形、状态、片中如何变化}。
+{Audio 1 若用}: <Audio 1> is the voice-timbre reference for <Subject 1> (S1).
 
 summary:
-[reference generation] {N} 秒 {单/多}人 {主题} 展示，<Subject 1> 使用 <Picture 1> 中的确切外观，在 <Subject 2> 中工作。严格按顺序：{动作1}，{动作2}，{动作3}，{动作4}，最后 {收尾动作}。{物理约束：只有两只手；每个道具先放下再换手；A 永不进入 B}。
+[reference generation] {N} 秒 {主题}。<Subject 1> 在 <Subject 2> 中按严格顺序：{动作1}，{动作2}，{收尾}。
 
 retention_analysis:
-<Subject 1> (appears in [Shot 1] through [Shot N]): partially_preserved - {保留什么；只改什么}.
-<Picture 1> (identity anchor for all shots): fully_preserved - {它锚定比例/五官/发型/服装}.
-<Subject 2> (appears in [Shot 1] through [Shot N]): fully_preserved - {环境一致性要求}.
-<Subject 3> (appears in [Shot 1] through [Shot N]): fully_preserved - {物件如何贯穿}.
+<Subject 1> (appears in [Shot 1], [Shot 2]): partially_preserved - 保留身份与五官；围裙改为新增。
+<Subject 2> (appears in [Shot 1], [Shot 2]): fully_preserved - 陈设与光源方向不变。
 
 detailed_description:
-{全局段：风格对撞（写实环境 + 二维角色）、剪辑节奏（beat-cut / 长镜）、总体禁令（手、道具、表情）}
-[Shot 1] {景别 + 机位} of <Subject 2>。Hand assignment for the whole shot: 左手 {只做什么}；右手 {只做什么}。{必须完成到什么程度——用 EVERY / ALL}。{表情}。Sound sync: {每条音效对应哪个动作}。
-[Shot 2] At 00:0{3}.000, {景别机位}。Hand assignment: 右手 {…}；左手 {…}。{动作与完成度}。{表情}。{运镜}。Sound sync: {…}。
-[Shot 3] At 00:0{5}.500, …
-[Shot 4] At 00:1{0}.000, …
-[Shot 5] At 00:1{2}.500, {收尾镜}。{双手如何收}。{表情：eyes OPEN}。{点缀效果}。Sound sync: {…}；hold until 00:0{N}.000。
+{风格总述，1–2 句，在 [Shot 1] 之前}
+[Shot 1] {景别机位}，{主体与动作}。<Subject 1> (S1)，{声音描述}，说：<d>[English] {原话}</d>。{收尾动作}
+[Shot 2] At 00:03.000, the camera cuts to {景别}。{动作与运镜}
+[Shot N] At 00:0N.000, …
 
 overall_soundscape:
-{环境底噪一句话}。所有音效严格与动作同步、绝不早于或晚于对应画面：Shot 1 —— {…}；Shot 2 —— {…}；…；Shot N —— {…}。
+{1–4 句整段概括：环境底噪 + 物理动作声 + 非语言人声}
 
 non_diegetic_music:
-{BPM 与风格}：{主奏乐器} 带 {旋律特征}，{打击乐}，{低音}；{卡点位置：切镜/翻炒/点火}；{收尾：明亮解决和弦 / 骤然切断}。
+{1–3 句：乐器、速度、节奏、强弱变化；没有就写 N/A}
 ```
 
-## 五、发出去之前自检（以后应做成工具的静态检查）
+---
 
-- [ ] 六个段标题齐全，`overall_soundscape` / `non_diegetic_music` 在最后
-- [ ] 每个 `<Subject n>` 都在 `subject_definitions` 里定义过；每个 `<Picture n>` 都有对应输入图
-- [ ] 角色条目里有**媒介声明**（写实 / 赛璐璐）与**本片增删**
-- [ ] 每个 `[Shot n]` 都有 `Hand assignment`、完成度措辞、表情、`Sound sync`
-- [ ] 时间码单调递增，末镜 `until` = 目标时长
-- [ ] 目标时长换算帧数落在 `5 + 17k`（24fps：15s→362，5s→124）
-- [ ] 至少 3 处绝对化措辞 + 3 处否定列举（`no …` / `never …`）
-- [ ] `non_diegetic_music` 写了 BPM（否则音乐容易发闷）
+## 十、发出去之前的自检
+
+**机械检查已经做成工具**（`mcp/lib/h3protocol.mjs`）：
+
+```bash
+npm test                        # 69 项单测，含 H3 结构校验的正/负样本
+```
+
+`comfy_video` 在**提交前**会跑一遍，error 级直接拦下、不发起执行，并把问题清单按字段位置列出来。
+确实要跳过（复刻旧稿/对照实验）传 `allow_invalid_prompt=true`。
+
+**人会漏、工具会查的那几条**：
+
+- [ ] 六个 / 三个段名与顺序对
+- [ ] 首镜没写时间码；后续 `At MM:SS.mmm` 严格递增
+- [ ] 每个 `<d>` 都闭合，且前面有 `(S n)` 或 `<Audio n>`
+- [ ] 声源编号按**首次发声顺序** 1,2,3…
+- [ ] 用到的 `<Subject n>` / `<Picture n>` / `<Audio n>` 都在 `subject_definitions` 里定义过
+- [ ] `retention_analysis` 每行有合法标记（可见用 preserved 系，音频用 copy/reference 系）
+- [ ] `overall_soundscape` **是概括，不是逐镜清单**
+- [ ] `non_diegetic_music` 没写抽象情绪词；没配乐写 `N/A`
+- [ ] 没有 `negative` / `negative_prompt`
+
+**【工程】另外两条跟协议无关，但我们踩过**：
+
+- 帧数必须落在 `5 + 17k`（24fps：15s→362，5s→124）—— 这是模型的时序步长
+- 二采用 SplitSigmas 8+4，**不要**用独立的 `BasicScheduler(denoise=0.35)`：
+  它会把 35% 噪声重新灌进整个 AV latent，音频退化成谐波嗡鸣（过零率 0.013 → 0.063 才正常）

@@ -315,6 +315,29 @@ runs/         运行记录（生成产物，不入库）
 
 ## 更新记录
 
+- **0.3.5** —— 按 **H3 官方协议**重做提示词这一层，并修两个会误伤长任务的缺陷（回归：unit 69/69）。
+  - **找到根因**：`prompts/h3-r2v-提示词格式.md` 原来是从两份样本**反推**的，不是从规范来的。
+    拉到官方 `skills/h3-prompt-writing/references/{base-en,ref-en}.txt` 逐条对照后，14 项里
+    **7 项冲突、4 项缺失**，其中最要命的是把 `overall_soundscape` 写成了「逐镜音效清单」
+    —— 官方明说那一段是**整段声学概括**，逐镜同步音效必须留在正文。另有对白层
+    （`(S1)` / `<d>` / `<scenetrans>` / `<cutoff>`）、参考音频 `<Audio N>`、图片对齐指令行**整层缺失**。
+    详见 [`docs/H3-官方协议对齐报告-2026-11-06.md`](docs/H3-官方协议对齐报告-2026-11-06.md)。
+  - **`mcp/lib/h3protocol.mjs`**：结构校验器，只判断结构、不解读内容、不回灌正文。
+    查字段名与顺序、首镜不写时间码、后续 `At MM:SS.mmm` 严格递增、`<d>` 成对、
+    声源按首次发声顺序编号、参考标签必须先定义、retention 标记合法、两条声音字段的职责边界、
+    禁止 `negative` 字段。报错只带**位置与形状**。
+  - **`mcp/lib/h3refs.mjs`**：`<Picture n>` 编号从 API 图**按执行顺序**数出来
+    （`MiniMaxH3ImageToVideo` → `first_frame,last_frame`；`MiniMaxH3ReferenceToVideo` → `ref_image_N`）。
+    只跟随单图操作；遇到开关/批量标 unresolved；**同一张图被两槽使用 → 返回 undefined，不猜**。
+  - **提交前拦截**：`comfy_video` 的 `start` 现在先跑结构校验，error 级直接拦下、**不发起执行**，
+    按字段位置列出问题让 agent 自己改；要照旧提交传 `allow_invalid_prompt=true`。
+    理由是 ComfyUI 的 `POST /prompt` 只校验节点/必填/类型，提示词写错它一句话不说。
+  - **缺席 ≠ 失败**：`waitFor` 原来「既不在队列也不在 history」就抛错，把正常任务误判成失败。
+    现在只有「从没出现过 + 过了宽限期」才报错；「出现过又不见了」按保守判据继续观察
+    （任务 ≥30 分钟 + 连续 6 次**有效**观测 + 跨度 ≥2 分钟），等不到返回 `notObserved` 而不是抛错。
+  - **`/queue` 不再整包拉**：响应里带着每个排队任务的完整工作流（几 MB），现在只取 id 与在场状态，
+    按 1 秒 TTL 共享同一次读取；凭据只作为内存缓存键，不落盘。
+  - **`prompts/h3-r2v-提示词格式.md` 重写**：以官方为准，样本降级为实例，凡是我们自己的经验都标【工程】。
 - **0.3.4** —— 修一条**只在别人机器上**才出现的问题，外加三件让工作流本身可维护的工具（回归：unit 29/29）。
   - **跨机器的面板渲染失败**：`cordis.patch.yml` 里写死了开发机的 `comfyRoot` / `projectRoot`。换台机器这两条
     「格式合法但不存在」，于是 `runs/live`、`workflows/`、`.cache/client-diag.log` 全落在空气里 ——
