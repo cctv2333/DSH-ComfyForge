@@ -1,0 +1,24 @@
+subject_definitions:
+<Subject 1> is the chibi anime girl in <Picture 1>, with very long dark navy-blue hair past her hips, blunt bangs, two long side locks, one thin ahoge, large round blue eyes with twin highlights, a white frilled maid headband, a navy-blue maid dress with puff sleeves, a white collar with a light-blue ribbon bow, white lace frills on the shoulders, a white apron with a scalloped hem, white cuffs with one dark button, white ankle socks and dark navy Mary Jane shoes. Her proportions stay at roughly four heads.
+<Subject 2> is the small wooden kitchen around her in <Picture 1>: a bamboo steamer on a low wooden table, a pale paper lantern overhead, a dark timber wall, and a stone floor.
+
+summary:
+[reference generation] A fifteen-second five-shot kitchen scene in which <Subject 1> lifts a dumpling from the bamboo steamer, sets it back, speaks one line to the camera, turns toward the window as the lantern light shifts, and finally presents the steamer with both hands. <Subject 1> keeps exactly the appearance defined above; <Subject 2> keeps the same layout, materials, and lantern position throughout.
+
+retention_analysis:
+<Subject 1> (appears in [Shot 1], [Shot 2], [Shot 3], [Shot 4], [Shot 5]): fully_preserved - hairstyle, eye colour, headband, dress, apron, socks, and shoes are retained without modification.
+<Subject 2> (appears in [Shot 1], [Shot 2], [Shot 3], [Shot 4], [Shot 5]): fully_preserved - the steamer, table, lantern, timber wall, and stone floor keep their positions and materials.
+
+detailed_description:
+The target video is a clean 2D cel-shaded anime illustration with flat colour bands, thin dark lineart, and soft even lighting that comes from the pale paper lantern.
+[Shot 1] A medium shot frames <Subject 1> standing behind the low wooden table in <Subject 2>, both hands resting on the bamboo steamer lid. She lifts the lid with her right hand and sets it down at the left edge of the table. Steam rises from the steamer and drifts across her apron. Her eyes follow the steam upward, then settle on the dumplings inside.
+[Shot 2] At 00:03.000, the camera cuts to a close-up of the steamer. <Subject 1> picks up one dumpling with her right hand, lifts it clear of the steamer, and places it back in the same spot. Her left hand stays flat on the table edge for the whole shot. The camera pushes in with small amplitude at slow speed as the steam wraps around her fingers.
+[Shot 3] At 00:06.000, the camera cuts to a medium close shot of <Subject 1>. She lifts her gaze from the steamer to the camera, her mouth opens, and <Subject 1> (S1), a young woman with a light, even voice, says: <d>[Chinese] 刚好五个，一人一个。</d> Her lips close after the last syllable. Her right hand stays on the steamer lid and her left hand stays on the table.
+[Shot 4] At 00:09.500, the camera cuts to a wider shot that includes the window at the right of <Subject 2>. <Subject 1> turns her head toward it as the lantern light brightens, and the shadow of the lantern slides across the timber wall behind her. The camera trucks right with small amplitude at slow speed to keep her centred.
+[Shot 5] At 00:12.500, the camera cuts to a close-up of <Subject 1>. She lifts the bamboo steamer with both hands to chest height, holds it steady, and smiles with her eyes open. Her lips stay closed for the entire shot. The steam keeps rising between her hands and the lantern light holds steady until the final frame.
+
+overall_soundscape:
+Quiet indoor kitchen room tone with a steady low hiss of steam from the bamboo steamer. A soft wooden knock is heard once as the lid is set down, and the room returns to the same steady tone afterwards.
+
+non_diegetic_music:
+A sparse guzheng line at a slow tempo, joined by a soft bamboo flute that enters under the third shot and fades out over the final two seconds.

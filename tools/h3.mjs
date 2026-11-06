@@ -4,28 +4,72 @@
 //   node tools/h3.mjs single <cfg.json>    一条片子（i2v 单遍）
 //   node tools/h3.mjs 2pass  <cfg.json>    一条片子（r2v 一采 → 3D 放大 → 分块二采）
 //   node tools/h3.mjs film   <cfg.json>    多镜头：末帧接首帧 + 自动拼接（i2v）
+//   node tools/h3.mjs check  <cfg.json>    只做提示词结构校验，不提交、不占显卡
 //
 // 与旧脚本的差别（都是那天踩过的坑）：
 //   * 每镜有硬超时，超时立刻报错退出，不再"永远等下去"
 //   * 进度按"节点阶段 + 已用时间"打印，不再只有 ...
 //   * 音频随视频一起出（H3 原生音轨），失败自动降级为无声
 //   * 输出统一写 runs/，参数和产物对得上
+//   * **提交前校验提示词结构**：ComfyUI 的 POST /prompt 不检查提示词，写错只会跑几分钟给你跑偏的片子
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 import { startVideo, videoStatus, framesFor, ffmpegBin, videoMetrics } from '../mcp/lib/video.mjs';
 import { COMFY_ROOT, PROJECT_ROOT, RUNS_DIR } from '../mcp/lib/comfy.mjs';
+import { validateH3Prompt, formatH3Problems } from '../mcp/lib/h3protocol.mjs';
 
 const [, , modeArg, cfgPath] = process.argv;
 const mode = modeArg || 'single';
 if (!cfgPath) {
-  console.error('usage: node tools/h3.mjs <single|2pass|film> <cfg.json>');
+  console.error('usage: node tools/h3.mjs <single|2pass|film|check> <cfg.json>');
   process.exit(2);
 }
 // 兼容 Windows 编辑器/PowerShell 常带的 UTF-8 BOM：JSON.parse 不认 BOM，会报
 // "Unexpected token '﻿'" —— 这类错误看起来像配置写错，实际只是文件头多了三个字节。
 const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8').replace(/^\uFEFF/, ''));
+
+// 提示词可以从独立文件读（相对 cfg 文件所在目录）——长提示词塞进 JSON 里既难改也难审。
+const readPromptFile = (rel) => fs.readFileSync(path.resolve(path.dirname(cfgPath), rel), 'utf8').replace(/^\uFEFF/, '').trim();
+if (!cfg.prompt && cfg.promptFile) cfg.prompt = readPromptFile(cfg.promptFile);
+for (const s of cfg.shots || []) {
+  if (!s.prompt && s.promptFile) s.prompt = readPromptFile(s.promptFile);
+}
+
+// ── 提示词结构校验（与 comfy_video 用同一套判据）────────────────────────────
+// 放在最前面：不合规就别开跑，省下的是十几分钟显卡时间。
+{
+  const CHECK_ONLY = mode === 'check';
+  const list = mode === 'film' ? (cfg.shots || []) : [{ prompt: cfg.prompt }];
+  const durationSec = cfg.seconds ?? (cfg.length ? cfg.length / 24 : undefined);
+  let bad = 0;
+  let warnTotal = 0;
+  for (const [i, shot] of list.entries()) {
+    const text = shot?.prompt ?? '';
+    const r = validateH3Prompt(text, { durationSec });
+    const errs = r.problems.filter((p) => p.level === 'error');
+    const warns = r.problems.filter((p) => p.level === 'warn');
+    warnTotal += warns.length;
+    if (errs.length) bad += 1;
+    const tag = list.length > 1 ? `提示词 shot${i + 1}` : '提示词';
+    if (!r.problems.length) { console.log(`[${tag}] 结构通过（模式=${r.mode}）`); continue; }
+    console.log(`[${tag}] 模式=${r.mode}  错误 ${errs.length} / 告警 ${warns.length}`);
+    console.log(formatH3Problems(r.problems, 10).split('\n').map((l) => '  ' + l).join('\n'));
+  }
+  if (CHECK_ONLY) {
+    console.log(`\n检查完成：${bad ? `${bad} 条结构不合格` : '全部通过'}${warnTotal ? `（${warnTotal} 条告警）` : ''}`);
+    process.exit(bad ? 1 : 0);
+  }
+  if (bad && !cfg.allowInvalidPrompt) {
+    console.error(`\n${bad} 条提示词结构不合格，已停止（**没有提交**）。`);
+    console.error('按官方规范改：字段名与顺序、首镜不写时间码、后续 At MM:SS.mmm 严格递增、<d> 成对、'
+      + '声源按首次发声顺序 (S1)(S2)…、参考标签先定义、不得出现 negative 字段。');
+    console.error('确实要照旧提交：在配置里写 "allowInvalidPrompt": true。');
+    process.exit(3);
+  }
+  if (bad) console.error(`\n⚠ 有 ${bad} 条结构不合格，但配置里 allowInvalidPrompt=true，继续执行。`);
+}
 const is2pass = mode === '2pass';
 // 2pass 的一采分辨率要低（低清抽卡），单遍/多镜沿用高清
 const W = cfg.width ?? (is2pass ? 608 : 1216);
