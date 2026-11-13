@@ -1,0 +1,25 @@
+{
+  "_说明": "中间态提示词的可编辑 spec。改这里再跑：node tools/transition.mjs prompts/examples/中间态-鼠标变老鼠.spec.json",
+  "_字段": {
+    "from / to": "起点和终点，写「静态长什么样」，别写「正在变成什么」",
+    "from_detail / to_detail": "各自最显眼的 2–3 个特征（材质、颜色、轮廓、附属物）。to_detail 缺了效果损失最大",
+    "from_feature / to_feature": "最显眼的材质，交界模板要用（如「塑料外壳」「灰毛」）",
+    "progress": "0–1，变化到多少。太小会被提醒「不如直接画起点」",
+    "axis": "分区轴：near->far / far->near / left->right / right->left / bottom->top / top->bottom / root->tip / tip->root / center->out / out->center",
+    "boundary": "交界机制：crack 顶裂 / bloom 生长 / shed 剥落 / melt 融化 / dissolve 溶解 / stitch 缝合 / glow 发光 / wet 黏液 / burn 灼烧 / crystal 结晶",
+    "keep": "必须保持不变的特征。越写越稳，模型不容易把整个角色重画"
+  },
+  "from": "白色哑光塑料无线鼠标",
+  "to": "灰毛家鼠",
+  "fromDetail": "光滑的哑光塑料壳，左键和中键的凹陷还在，底部滚轮边缘有一圈灰",
+  "toDetail": "短而密的灰毛顺着头骨方向贴着，粉色圆耳从毛里立起来，一条细长裸尾从尾部位置垂下来，尾尖还湿着",
+  "fromFeature": "塑料外壳",
+  "toFeature": "灰毛",
+  "progress": 0.6,
+  "axis": "near->far",
+  "boundary": "crack",
+  "keep": ["壳上的品牌 logo", "整体尺寸与握持比例"],
+  "scene": "干净的浅灰摄影棚背景，柔和顶光，浅景深，产品摄影的打光",
+  "style": "realistic",
+  "canvas": "主体居中，占画面三分之二"
+}
