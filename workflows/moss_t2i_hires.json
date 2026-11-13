@@ -1,0 +1,248 @@
+{
+  "name": "moss_t2i_hires",
+  "version": 1,
+  "title": "MOSS-Image 两段采样（宽画布 → 1.1× latent → 低噪声二采）",
+  "description": "移植自朋友那份「MOSS多角色中间态测试」（2026-11-13），去掉我们机器上没有的东西，保留它的骨架：1536×960 宽画布 + euler/sgm_uniform + 12 步 CFG 3 + latent 1.1× + 12 步 CFG 5 / denoise 0.7 的二采。适合「一张图里塞多个人物」和「要更多细节但不想堆步数」。与他的差异：①文本编码器用 qwen3.5_9b_w4a8_gptq（他的 int8_convrot 我们没有）；②VAE 用官方推荐的 flux2-vae_small（他写的是 flux2-vae，本机两份都有）；③他那个 8 步 DMD 加速 LoRA 和一批画风 LoRA 我们都没有 —— 所以出图风格不会和他一样，这里也不假装能一样；④他靠 WeiLinPromptUI/Efficiency/Text Concatenate 三个插件拼图，这里全部用核心节点等价重写，不依赖任何插件。想更稳（官方方向）可传 steps=25 cfg=2.5 sampler=er_sde scheduler=simple hires_denoise=0.5。",
+  "model": "moss_image_sft_int8_convrot.safetensors",
+  "native_mp": 1.5,
+  "recommended_sizes": [
+    {
+      "name": "wide-16:10",
+      "width": 1536,
+      "height": 960,
+      "note": "移植自他的画布，多角色首选"
+    },
+    {
+      "name": "square",
+      "width": 1024,
+      "height": 1024,
+      "note": "单人像"
+    },
+    {
+      "name": "portrait",
+      "width": 1024,
+      "height": 1280,
+      "note": "竖图"
+    }
+  ],
+  "bindings": {
+    "prompt": [
+      "4",
+      "text"
+    ],
+    "negative": [
+      "5",
+      "text"
+    ],
+    "width": [
+      "6",
+      "width"
+    ],
+    "height": [
+      "6",
+      "height"
+    ],
+    "steps": [
+      "7",
+      "steps"
+    ],
+    "cfg": [
+      "7",
+      "cfg"
+    ],
+    "sampler": [
+      "7",
+      "sampler_name"
+    ],
+    "scheduler": [
+      "7",
+      "scheduler"
+    ],
+    "seed": [
+      "7",
+      "seed"
+    ],
+    "hires_scale": [
+      "8",
+      "scale_by"
+    ],
+    "hires_steps": [
+      "9",
+      "steps"
+    ],
+    "hires_cfg": [
+      "9",
+      "cfg"
+    ],
+    "hires_denoise": [
+      "9",
+      "denoise"
+    ],
+    "hires_seed": [
+      "9",
+      "seed"
+    ],
+    "filename_prefix": [
+      "11",
+      "filename_prefix"
+    ]
+  },
+  "randomize": [
+    "seed",
+    "hires_seed"
+  ],
+  "defaults": {
+    "prompt": "一张照片：年轻东亚女性站在海边，黄昏自然光，85mm 定焦，浅景深，皮肤质感真实，温柔的表情",
+    "negative": "worst quality, bad anatomy, watermark, jpeg artifact, extra toes, lowres, text, error, missing limbs, bad hands, unfinished, displeasing",
+    "width": 1536,
+    "height": 960,
+    "steps": 12,
+    "cfg": 3,
+    "sampler": "euler",
+    "scheduler": "sgm_uniform",
+    "hires_scale": 1.1,
+    "hires_steps": 12,
+    "hires_cfg": 5,
+    "hires_denoise": 0.7,
+    "filename_prefix": "comfyforge/moss_hires"
+  },
+  "workflow": {
+    "1": {
+      "class_type": "UNETLoader",
+      "inputs": {
+        "unet_name": "moss_image_sft_int8_convrot.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    "2": {
+      "class_type": "CLIPLoader",
+      "inputs": {
+        "clip_name": "qwen3.5_9b_w4a8_gptq.safetensors",
+        "type": "moss_image",
+        "device": "default"
+      }
+    },
+    "3": {
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "flux2-vae_small.safetensors"
+      }
+    },
+    "4": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "",
+        "clip": [
+          "2",
+          0
+        ]
+      }
+    },
+    "5": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "",
+        "clip": [
+          "2",
+          0
+        ]
+      }
+    },
+    "6": {
+      "class_type": "EmptyFlux2LatentImage",
+      "inputs": {
+        "width": 1536,
+        "height": 960,
+        "batch_size": 1
+      }
+    },
+    "7": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "positive": [
+          "4",
+          0
+        ],
+        "negative": [
+          "5",
+          0
+        ],
+        "latent_image": [
+          "6",
+          0
+        ],
+        "seed": 0,
+        "steps": 12,
+        "cfg": 3,
+        "sampler_name": "euler",
+        "scheduler": "sgm_uniform",
+        "denoise": 1
+      }
+    },
+    "8": {
+      "class_type": "LatentUpscaleBy",
+      "inputs": {
+        "samples": [
+          "7",
+          0
+        ],
+        "upscale_method": "nearest-exact",
+        "scale_by": 1.1
+      }
+    },
+    "9": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "positive": [
+          "4",
+          0
+        ],
+        "negative": [
+          "5",
+          0
+        ],
+        "latent_image": [
+          "8",
+          0
+        ],
+        "seed": 0,
+        "steps": 12,
+        "cfg": 5,
+        "sampler_name": "euler",
+        "scheduler": "sgm_uniform",
+        "denoise": 0.7
+      }
+    },
+    "10": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "9",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
+      }
+    },
+    "11": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": [
+          "10",
+          0
+        ],
+        "filename_prefix": "comfyforge/moss_hires"
+      }
+    }
+  }
+}

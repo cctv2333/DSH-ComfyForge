@@ -40,7 +40,7 @@ const {
   EDIT_DIR, withControl, editWorkflow, finishEdit, pollMany, summarizeEntries, newestOutputs,
   inputDir, resolveVideoPath,
 } = C;
-// 本文件注册 2 个工具：comfy_video, comfy_lint_prompt
+// 本文件注册 3 个工具：comfy_video, comfy_lint_prompt, comfy_transition_prompt
 
 server.tool(
   'comfy_video',
@@ -198,6 +198,71 @@ server.tool(
       });
     } catch (e) {
       return fail(e.message);
+    }
+  },
+);
+
+server.tool(
+  'comfy_transition_prompt',
+  '「中间态」提示词编译器：把「A 变成 B」编译成模型画得出来的空间描述。扩散模型没有时间轴，「正在变成」没有对应像素——只能靠"同一具身体上一部分已经变了、一部分还没变、交界处留下正在推进的物理痕迹"。这个工具负责分区归属 + 交界机制 + 必须不变的特征，直接产出可喂给 MOSS/FLUX.2/Krea2 的正负提示词。action=build 编译；list 看可选的分区轴/交界机制；example 看现成例子。',
+  {
+    action: z.enum(['build', 'list', 'example']).optional().describe('build（默认）=编译；list=列出可选值；example=输出一个现成例子'),
+    from: z.string().optional().describe('起点：静态地描述"原来是什么、长什么样"（不是"正在变成什么"）'),
+    to: z.string().optional().describe('终点：静态地描述"变成之后长什么样"'),
+    from_detail: z.string().optional().describe('起点最显眼的 2–3 个特征（材质、颜色、轮廓）'),
+    to_detail: z.string().optional().describe('终点最显眼的 2–3 个特征——不给效果损失最大'),
+    from_feature: z.string().optional().describe('起点最显眼的材质，如"塑料外壳"（交界模板要用）'),
+    to_feature: z.string().optional().describe('终点最显眼的材质，如"灰毛"（交界模板要用）'),
+    progress: z.number().min(0).max(1).optional().describe('变化到多少（0–1，默认 0.6）。太小或太大会被提醒"不如直接画起点/终点"'),
+    axis: z.string().optional().describe('分区轴，如 near->far / left->right / bottom->top / root->tip / center->out。用 action=list 看全部'),
+    boundary: z.string().optional().describe('交界机制，如 crack 顶裂 / bloom 生长 / shed 剥落 / melt 融化 / dissolve 溶解 / stitch 缝合 / glow 发光 / wet 黏液 / burn 灼烧 / crystal 结晶'),
+    keep: z.array(z.string()).optional().describe('必须保持不变的特征（越写越稳，模型不容易把整个角色重画）'),
+    scene: z.string().optional().describe('背景/环境/光'),
+    style: z.enum(['anime', 'realistic', 'illustration', 'cinematic', 'threed']).optional().describe('画风'),
+    subjects: z.array(z.any()).optional().describe('多主体：[{name, from, to, progress, axis, boundary, position, ...}]，静态角色用 {name, desc, position}'),
+    example: z.string().optional().describe('example 用：mouse / magical / alien'),
+    json: z.boolean().optional().describe('只要机器可读的结果'),
+  },
+  async (a) => {
+    try {
+      const T = await import('../lib/transition.mjs');
+      if (a.action === 'list') {
+        return text({
+          axes: Object.fromEntries(Object.entries(T.AXES).map(([k, v]) => [k, `${v.kind}：${v.zh.changed} 已变 / ${v.zh.intact} 未变`])),
+          boundaries: Object.fromEntries(Object.entries(T.BOUNDARIES).map(([k, v]) => [k, v.fits])),
+          styles: Object.keys(T.STYLES),
+          examples: Object.fromEntries(Object.entries(T.EXAMPLES).map(([k, v]) => [k, v.label])),
+        });
+      }
+      if (a.action === 'example' || a.example) {
+        const ex = T.EXAMPLES[a.example || 'mouse'];
+        if (!ex) return fail(`没有叫 "${a.example}" 的例子。有：${Object.keys(T.EXAMPLES).join(', ')}`);
+        const r = T.buildTransition(ex.spec);
+        return text({ ok: r.ok, label: ex.label, prompt: r.prompt, negative: r.negative, warnings: r.warnings, notes: r.notes, spec: ex.spec });
+      }
+
+      const spec = a.subjects?.length ? { subjects: a.subjects } : {
+        from: a.from, to: a.to, fromDetail: a.from_detail, toDetail: a.to_detail,
+        fromFeature: a.from_feature, toFeature: a.to_feature,
+      };
+      Object.assign(spec, {
+        progress: a.progress, axis: a.axis, boundary: a.boundary, keep: a.keep,
+        scene: a.scene, style: a.style,
+      });
+      for (const k of Object.keys(spec)) if (spec[k] === undefined) delete spec[k];
+      if (!spec.subjects && !spec.from && !spec.to) {
+        return fail('需要 from + to（单主体），或 subjects（多主体）。先跑 action=list 看可选值。');
+      }
+
+      const r = T.buildTransition(spec);
+      return text({
+        ok: r.ok, prompt: r.prompt, negative: r.negative,
+        warnings: r.warnings, notes: r.notes,
+        chars: { prompt: [...r.prompt].length, negative: [...r.negative].length },
+        note: '把 prompt 直接当正向提示词用。负向只在 CFG>1 时有效（FLUX.2 的 cfg=1，负向白算）。',
+      });
+    } catch (e) {
+      return fail(e.message, { hint: e.details ? undefined : '分区轴/交界机制的名字要写对，先跑 action=list' });
     }
   },
 );

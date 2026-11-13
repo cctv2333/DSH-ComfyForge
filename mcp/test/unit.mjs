@@ -329,5 +329,80 @@ console.log('\n== 13. 版本号不能各说各话 ==');
   void execFileSync; // 保留导入以便后续扩展
 }
 
+console.log('\n== 14. 「中间态」提示词编译器 ==');
+{
+  // 为什么有这一组：用户 2026-11-13 要的是「一个人变成另外一个东西的中间状态」，
+  // 而这东西反复出错的形态是固定的——模型给两个东西并排、或者给一条蒙版式的直缝。
+  // 编译器的全部价值就在"分区归属 + 交界机制"这两块，所以按这两块逐条钉死。
+  const T = await import('../lib/transition.mjs');
+  const { buildTransition, AXES, BOUNDARIES, detectProcessWords, EXAMPLES } = T;
+
+  ok('分区轴都写了中英两套', Object.values(AXES).every((a) => a.zh?.changed && a.en?.changed && a.zh?.landmark));
+  ok('渐变轴有"往已变侧"的方向词', ['root->tip', 'tip->root'].every((k) => AXES[k].zh.outward && AXES[k].en.outward));
+  ok('交界机制都有中英模板', Object.values(BOUNDARIES).every((b) => b.zh && b.en && b.fits));
+  ok('交界机制认得出过程动词', detectProcessWords('她正在变成怪物').length > 0 && detectProcessWords('穿白裙的少女').length === 0);
+
+  const base = {
+    from: '白色哑光塑料无线鼠标', to: '灰毛家鼠',
+    toDetail: '短而密的灰毛、粉色圆耳、细长裸尾',
+    fromDetail: '光滑塑料壳、左键凹陷、底部滚轮',
+    fromFeature: '塑料外壳', toFeature: '灰毛',
+    progress: 0.6, axis: 'near->far', boundary: 'crack',
+  };
+  const r = buildTransition(base);
+  ok('单主体能出提示词', r.ok && r.prompt.length > 80);
+  ok('提示词里有起点与终点', r.prompt.includes(base.from) && r.prompt.includes(base.to));
+  ok('提示词里有分区归属', r.prompt.includes('靠观众这一侧') && r.prompt.includes('远端这一侧'));
+  ok('提示词里有交界机制', r.prompt.includes('裂纹') && r.prompt.includes('灰毛'));
+  ok('progress 0.6 说成"大部分"', r.prompt.includes('大部分'), r.prompt.slice(0, 60));
+  ok('progress 0.2 说成"一小块"', buildTransition({ ...base, progress: 0.2 }).prompt.includes('一小块'));
+  ok('负向词挡住"两个东西并排"', r.negative.includes('并排') && r.negative.includes('对比图'));
+  ok('输出无替换字符', !r.prompt.includes('\uFFFD') && !r.negative.includes('\uFFFD'));
+  ok('输出不是 markdown（没有 # 标题）', !/^#/m.test(r.prompt));
+  ok('中文标点后不留空格', !/[，。；：、] /.test(r.prompt), (r.prompt.match(/.{0,6}[，。；：、] .{0,6}/) || [''])[0]);
+
+  ok('缺 to_detail 会提醒', buildTransition({ from: '塑料鼠标', to: '灰毛家鼠', fromFeature: '塑料壳', toFeature: '灰毛' })
+    .warnings.some((w) => w.includes('to_detail')));
+  ok('端点里写过程动词会提醒', buildTransition({ ...base, from: '一只正在变成老鼠的鼠标' })
+    .warnings.some((w) => w.includes('过程动词')));
+  ok('progress 太小会提醒（不如直接画起点）', buildTransition({ ...base, progress: 0.01 })
+    .warnings.some((w) => w.includes('直接画起点')));
+  ok('keep 与终点冲突会提醒', buildTransition({ ...base, keep: ['灰毛家鼠'] })
+    .warnings.some((w) => w.includes('两边都不听') || w.includes('已经出现在 to 里')));
+
+  const throws = (fn, frag) => { try { fn(); return false; } catch (e) { return frag ? e.message.includes(frag) : true; } };
+  ok('端点太短直接报错', throws(() => buildTransition({ from: '鼠', to: '灰毛家鼠' })));
+  ok('起点终点一样直接报错', throws(() => buildTransition({ from: '灰毛家鼠', to: '灰毛家鼠' })));
+  ok('坏 axis 报错并列出可用值', throws(() => buildTransition({ ...base, axis: 'sideways' }), 'near->far'));
+  ok('坏 boundary 报错并列出可用值', throws(() => buildTransition({ ...base, boundary: 'magic' }), 'crack'));
+  ok('没有主体直接报错', throws(() => buildTransition({})));
+
+  // 注意：编译器不翻译用户给的文字（"只校验结构，不改写散文"），所以 en 用例的输入也得是英文。
+  // 这条断言钉的是"模板本身"没有漏中文。
+  const en = buildTransition({
+    from: 'white plastic wireless mouse', to: 'grey house rat',
+    toDetail: 'short grey fur, pink round ears, long bare tail',
+    fromDetail: 'glossy plastic shell, scroll wheel',
+    fromFeature: 'plastic shell', toFeature: 'grey fur',
+    progress: 0.6, axis: 'near->far', boundary: 'crack', lang: 'en',
+  });
+  ok('en 输出不含汉字（模板没漏中文）', !/[\u4e00-\u9fff]/.test(en.prompt), (en.prompt.match(/[\u4e00-\u9fff]+/) || [''])[0]);
+  ok('en 输出有英文交界描述', /cracks|sprouts|flakes|softens/i.test(en.prompt));
+
+  const multi = buildTransition({
+    subjects: [
+      { name: '零', ...base, axis: 'root->tip', boundary: 'bloom' },
+      { name: '魅魔', desc: '粉色皮肤的小恶魔，黑色哥特水手服', position: '画面右侧' },
+    ],
+  });
+  ok('多主体：两个角色都在', multi.prompt.includes('零') && multi.prompt.includes('魅魔'));
+  ok('多主体：静态角色原样拼进去（不改写）', multi.prompt.includes('粉色皮肤的小恶魔，黑色哥特水手服'));
+  ok('多主体：先说清互不融合', multi.prompt.includes('互不融合'));
+  ok('渐变轴用"往根部"而不是"往外"', multi.prompt.includes('往根部这一段'), multi.prompt.slice(0, 120));
+  ok('静态角色不算过渡主体', multi.notes.some((n) => n.includes('不参与变化')));
+
+  ok('三个例子都能编译', Object.values(EXAMPLES).every((e) => buildTransition(e.spec).ok));
+}
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

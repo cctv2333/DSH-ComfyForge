@@ -8,7 +8,7 @@
 
 - 传输：stdio（MCP 官方 SDK 1.30，JSON-RPC 换行分帧）
 - 目标：`http://127.0.0.1:8188`（`COMFY_URL` 或 `comfyforge.config.json` 可改）
-- 33 个工具；图像运算走本地 Python 的 Pillow + numpy（自动挑选，不写死路径）
+- 34 个工具；图像运算走本地 Python 的 Pillow + numpy（自动挑选，不写死路径）
 
 ## 挂载
 
@@ -84,6 +84,7 @@ node test/e2e.mjs --sizes 512x512,768x768,1024x1024   # 分辨率对比 + 联络
 | `comfy_sweep` | **分辨率试错**：同 seed 同提示词跑一组尺寸，按客观指标排序找原生桶 |
 | `comfy_check_workflow` | **工作流体检**：给 `path` 或 `json`，分 A/B/C/D 四档报缺件（remote 模式下会明说 A/D 档不可判） |
 | `comfy_lint_prompt` | **提示词体检**：纯规则、毫秒级、不联网；查段落/引用闭合/时间码/帧数 5+17k/手分工 |
+| `comfy_transition_prompt` | **中间态编译器**：把「A 变成 B」编译成模型画得出来的空间描述（分区归属 + 交界机制 + 必须不变的特征）。10 分区轴 × 10 交界机制 × 中英双语；`action=list` 看可选值 |
 
 ## 工作与 Bug 日志（写在工具里）
 

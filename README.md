@@ -1,9 +1,9 @@
 # ComfyForge
 
-**版本 `0.3.10`** · MIT · <https://github.com/cctv2333/DSH-ComfyForge>
+**版本 `0.3.11`** · MIT · <https://github.com/cctv2333/DSH-ComfyForge>
 
 把本机 ComfyUI 变成 **agent 能看见自己产出、能自检、能按证据改** 的工具链：
-33 个 MCP 工具 + 一套客观质检 + 一个执行实时面板 + 一组零依赖的 CLI 工具。
+34 个 MCP 工具 + 一套客观质检 + 一个执行实时面板 + 一组零依赖的 CLI 工具。
 
 它不是「一键出图」软件。核心是这条闭环：
 
@@ -12,7 +12,7 @@
 ```
 
 > **这个仓库里有两样东西，别装混了：**
-> - `mcp/` —— 给 AI 调用的 **MCP 工具**（33 个）
+> - `mcp/` —— 给 AI 调用的 **MCP 工具**（34 个）
 > - `dsh-plugin/` —— DSH 的**界面插件**（「Comfy 工作台」面板）
 >
 > 只装 MCP，界面上**不会出现任何面板**。
@@ -223,7 +223,7 @@ Claude Desktop / 其他 MCP 客户端同理：stdio，命令 `node`，参数 `mc
 换成别的 FLUX / SD 系模型也行，但要自己改模板里的 `unet_name`/`clip_name`，
 并接受「原生分辨率、推荐桶」随之变化（`models.json` 就是记这件事的）。
 
-## 工具（33 个）
+## 工具（34 个）
 
 | 类别 | 工具 |
 |---|---|
@@ -233,7 +233,7 @@ Claude Desktop / 其他 MCP 客户端同理：stdio，命令 `node`，参数 `mc
 | 看图 / 质检 | `comfy_image` `comfy_snapshot` `comfy_inspect` `comfy_look` `comfy_region` |
 | 改图 | `comfy_edit` `comfy_upload` `comfy_composite` `comfy_place` `comfy_replace` `comfy_restructure` |
 | 归档 | `comfy_workflows` `comfy_check_workflow` `comfy_picks` `comfy_triage` `comfy_templates` `comfy_runs` |
-| 记忆 / 校验 | `comfy_lessons` `comfy_journal` `comfy_activity` `comfy_lint_prompt` |
+| 记忆 / 校验 | `comfy_lessons` `comfy_journal` `comfy_activity` `comfy_lint_prompt` `comfy_transition_prompt` |
 
 每个工具的详细语义、参数与「为什么这么设计」见 [`mcp/README.md`](mcp/README.md)。
 
@@ -323,6 +323,21 @@ runs/         运行记录（生成产物，不入库）
 
 ## 更新记录
 
+- **0.3.11** —— 一个概念、一个模板。都是为了「一个人变成另外一个东西的中间状态」。
+  - **`comfy_transition_prompt`（新工具）+ `tools/transition.mjs`（CLI）**：把「A 变成 B」编译成模型画得出来的空间描述。
+    起因：扩散模型没有时间轴，「正在变成」没有对应像素，写这种句子只会得到**两个东西并排**。
+    编译器的全部内容是这两块：**分区归属**（哪一侧已经变了、哪一侧还没有、分界线对标哪个地标）
+    和**交界机制**（顶裂 / 生长 / 剥落 / 融化 / 溶解 / 缝合 / 发光 / 黏液 / 灼烧 / 结晶）。
+    10 种分区轴 × 10 种交界机制 × 中英双语；有 107 项单测钉住边界（端点太短、起点=终点、坏轴名、
+    progress 太小「不如直接画起点」、keep 与终点冲突、中文标点后不留空格）。**编译器不翻译、不改写你给的文字**。
+  - **`workflows/moss_t2i_hires.json`（新模板）+ 侧边栏 `08-文生图-MOSS-两段采样.json`**：
+    移植自朋友那份「MOSS多角色中间态测试」，去掉我们机器上没有的东西、保留骨架：
+    1536×960 宽画布 + `euler`/`sgm_uniform` + 12 步 CFG 3 → latent 1.1× → 12 步 CFG 5 / denoise 0.7 二采。
+    **不假装能一样**：他的 8 步 DMD 加速 LoRA 和一批画风 LoRA 我们一个都没有，所以画风不会和他相同；
+    他的 WeiLinPromptUI / Efficiency / Text Concatenate 三个插件全部用核心节点等价重写，不依赖任何插件。
+    顺带实测出他那份的一个坑：加速开关处于**绕过**状态，按 ComfyUI 的 bypass 规则会取第一个同类型输入
+    （跳层那一路），**8 步 DMD LoRA 根本没接进采样器**——而它作为启用节点仍会照样提交，在没装它的机器上直接卡校验。
+  - 说清一件事：**「中间态」不是某个模型的隐藏能力**，它靠提示词写法；工作流本身不会让它变好，只会让它画得更大更细。
 - **0.3.10** —— 采纳 A/B 结论：**二采默认 `splitStep` 8 → 10**。
   - 依据（同提示词、同种子、只改这一个数）：763s → **572s（快 25%）**；flicker 3.96 → 3.686；
     切点都是 4；`ahash` 两组完全相同；六段抽帧并排看，构图/表情/光影对得上，

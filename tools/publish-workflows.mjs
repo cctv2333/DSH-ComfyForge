@@ -39,6 +39,8 @@ const PUBLISH = [
   { kind: 'template', file: 'moss_t2i.json', out: '02-文生图-MOSS.json' },
   { kind: 'template', file: 'krea2_t2i.json', out: '03-文生图-Krea2.json' },
   { kind: 'template', file: 'flux2_t2i.json', out: '04-文生图-FLUX2.json' },
+  // 前缀用 08 而不是 05：侧边栏里已经有别人留下的 05/06/07，重号会看着像覆盖了它们
+  { kind: 'template', file: 'moss_t2i_hires.json', out: '08-文生图-MOSS-两段采样.json' },
 ];
 
 function loadGraph(item) {

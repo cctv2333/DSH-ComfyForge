@@ -66,6 +66,13 @@ await withClient(async (client) => {
     'comfy_snapshot', 'comfy_inspect', 'comfy_templates', 'comfy_runs', 'comfy_lessons', 'comfy_log',
     'comfy_edit', 'comfy_replace', 'comfy_restructure'];
   for (const e of expected) ok(`有工具 ${e}`, names.includes(e));
+  ok('有工具 comfy_transition_prompt', names.includes('comfy_transition_prompt'));
+
+  // 工具数量也是会漂的东西：README 写着"34 个"，实际注册了 35 个，读者第一眼就被骗。
+  // 和版本号同类问题，所以用同一个办法钉住——拿真实的 listTools 去比文档里的数字。
+  const readme = readFileSync(join(HERE, '..', '..', 'README.md'), 'utf8');
+  const declared = /(\d+) 个 MCP 工具/.exec(readme)?.[1];
+  ok('README 的工具数 = 实际注册数', Number(declared) === names.length, `README ${declared} vs 实际 ${names.length}`);
 
   // 每个工具都必须有可用的 inputSchema
   const badSchema = tools.filter((t) => !t.inputSchema || t.inputSchema.type !== 'object');
@@ -234,6 +241,23 @@ await withClient(async (client) => {
   const got = parseText(await client.callTool({ name: 'comfy_templates', arguments: { action: 'get', name: 'flux_t2i' } }));
   ok('取到完整工作流', Object.keys(got?.template?.workflow || {}).length === 10);
   ok('模板带绑定表', !!got?.template?.bindings?.width);
+
+  console.log('== 9b. 中间态提示词编译器（端到端） ==');
+  // 单测覆盖的是编译器本身；这里钉的是"它真的挂在 MCP 上、agent 调得到"。
+  const axes = parseText(await client.callTool({ name: 'comfy_transition_prompt', arguments: { action: 'list' } }));
+  ok('列出分区轴与交界机制', !!axes?.axes?.['near->far'] && !!axes?.boundaries?.crack);
+  const tp = parseText(await client.callTool({
+    name: 'comfy_transition_prompt',
+    arguments: {
+      from: '白色塑料鼠标', to: '灰毛家鼠', to_detail: '短灰毛、粉耳、细长裸尾',
+      from_feature: '塑料外壳', to_feature: '灰毛',
+      progress: 0.6, axis: 'near->far', boundary: 'crack',
+    },
+  }));
+  ok('编译出正向提示词', typeof tp?.prompt === 'string' && tp.prompt.includes('塑料外壳') && tp.prompt.length > 100);
+  ok('同时给出负向提示词', typeof tp?.negative === 'string' && tp.negative.includes('并排'));
+  const badAxis = await client.callTool({ name: 'comfy_transition_prompt', arguments: { from: '塑料鼠标', to: '灰毛家鼠', axis: 'sideways' } });
+  ok('坏分区轴报错且列出可用值', badAxis?.isError === true || /near->far/.test(JSON.stringify(badAxis)));
 
   console.log('== 10. 未知工具与坏参数 ==');
   let unknownErrored = false;
